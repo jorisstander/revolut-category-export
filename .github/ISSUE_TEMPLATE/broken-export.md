@@ -16,8 +16,9 @@ labels: bug
      Revolut's side from a bug in this code.
 
      What it prints: account types, currencies, pocket types, HTTP status codes, row
-     counts, category names, and SHORTENED account and wallet ids (first eight
-     characters). It prints no amounts, no merchant names and no card or IBAN numbers.
+     counts, whether the response was an array, category names, and SHORTENED account
+     and wallet ids (first eight characters). It prints no amounts, no merchant names
+     and no card or IBAN numbers.
 
      One thing it cannot control: if a request fails at the network level, Chrome prints
      its own red error line, and that line contains the full request URL including a

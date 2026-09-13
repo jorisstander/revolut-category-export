@@ -134,8 +134,30 @@ raises if the answer is yes.
 That last request is the difference between a guess and a measurement. Several earlier
 versions guessed, in several different ways, and each returned a well-formed file missing
 part of a month. It costs one request, and only on the path where an account's history
-runs out before the range does. A normal month over deep history costs three to five
-requests in total; the walk stops as soon as a page reaches past the start of the range.
+runs out before the range does.
+
+Two further rules follow from the same principle, that page shape is not evidence:
+
+- **Paging decisions are made on completion dates only.** No filter is applied on
+  transaction `state`, so a `PENDING` pre-authorisation that never completed rides along,
+  placed by its start date. Folding that start date into a page's minimum made a single
+  request look like it had reached the start of history, dropping 201 of 400 rows with no
+  error — the loss sits at the old end, where the balance chain cannot see it.
+- **An empty page is asked again before it is believed.** This endpoint has been observed
+  answering `200` with an empty array while the account still has transactions (above).
+  Page length is not evidence anywhere else in the walk, so it cannot be the one exception
+  here: a spurious empty page mid-walk would drop everything older than it.
+
+The walk also reads a week below the start of the range before calling it covered. A
+transaction belongs to a month by when it *completed*, but the server may order the feed by
+when each one *started*; under that ordering a payment started on the 31st and cleared on
+the 2nd sits below one that started later and cleared at once. The margin costs at most an
+extra page, and rows outside the range are discarded either way.
+
+Measured against the module, with the default page size: a quiet month is one request, a
+normal month two, a busy month of 400 rows three. An account whose history runs out inside
+the range is the dearest case at five or six, because that is the path that asks the extra
+question rather than assuming the answer.
 
 ### Completeness is verified, not assumed
 
@@ -155,10 +177,31 @@ It catches gaps in the middle. It cannot see rows missing from either *end* of t
 so the walk still has to reach past the start or prove the feed ran out; those two
 together are the completeness guarantee.
 
-Two deliberate limits. A server that rounds its cutoff coarser than a millisecond cannot
+Rows that share an instant are checked as a group rather than in the order they arrived.
+There is no documented tiebreaker, so the delivery order of an overnight batch settlement
+is not its ledger order, and comparing those rows pairwise as delivered raised
+`IncompleteExportError` on a complete export — the file became impossible to write.
+Whatever order the group is in, each row's balance is the next one's "balance before"
+except at the two ends, so cancelling those two sets identifies the ends without needing
+the order. A row missing from the batch still fails to cancel, and still raises.
+
+Three things switch the check off, each deliberate and each a limit worth knowing:
+
+- A row carrying no settled balance takes no part. A `PENDING` row has not moved the
+  balance, so the settled rows either side must still chain directly across it — which is
+  what closed the hole where a pending row sitting exactly at a paging gap concealed it.
+- A row with no `amount` cannot be subtracted, so the chain cannot be continued across it.
+- A set whose balances never move carries no ledger information at all. Pockets that
+  report no `balance` field therefore get no completeness check, and the guarantee above
+  quietly does not apply to them.
+
+Three deliberate limits. A server that rounds its cutoff coarser than a millisecond cannot
 be walked safely — the signature is identical to one ignoring the parameter entirely, so
-the tool refuses rather than guess. And the request budget is 40 pages: these calls go to
-someone's bank, and a server behaving oddly should not be able to drive hundreds of them.
+the tool refuses rather than guess. More transactions sharing a single timestamp than one
+page can return cannot be read whole by any request, so that refuses too: stepping past
+them would drop the remainder at the oldest end of the range, where the balance chain
+cannot see it. And the request budget is 40 pages: these calls go to someone's bank, and a
+server behaving oddly should not be able to drive hundreds of them.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
 exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers.

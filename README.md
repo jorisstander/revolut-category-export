@@ -132,6 +132,7 @@ See [docs/api-notes.md](docs/api-notes.md) for everything observed about the API
 | An account marked *can't be read* | No query parameter returned that account's own rows. It is listed rather than hidden so you know it exists. |
 | *returned no transactions for this month* | Nothing is written, deliberately. An empty CSV reads as a quiet month rather than a failure. |
 | Everything fails at once | Revolut may have shipped a new web client. Run `spike/snippet.js` in the DevTools console on a logged-in tab; it reports what the API is doing now, to compare against `docs/api-notes.md`. |
+| *Transactions are missing between …* or *Refusing to write a partial file* | The export stopped rather than write a file it could not prove complete — the balances did not line up, or paging could not reach the whole month. Nothing is written, and nothing is wrong with your account. This is a bug worth reporting: open an issue with the message and the output of `spike/snippet.js`. |
 
 ## Development
 
@@ -149,8 +150,11 @@ To check an export against Revolut's own statement export:
 node scripts/reconcile.mjs ours.csv official.csv
 ```
 
-It does a per-row diff keyed on transaction ID, so a mismatch tells you *which* rows
-differ rather than just that the totals disagree.
+It does a per-row diff, so a mismatch tells you *which* rows differ rather than just that
+the totals disagree. Revolut's own export has no transaction id column, so the two sides
+are keyed on id only when both files carry one, and on date, amount and description
+otherwise. Equal row counts and an equal total are not treated as a match on their own —
+one row substituted for another clears both of those.
 
 ## Contributing
 

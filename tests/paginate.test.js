@@ -26,8 +26,8 @@ function feed(rows) {
 test('requests the transactions path with the handle selector', async () => {
   const { get, calls } = feed([]);
   await fetchRange({ get, handle, from: at(1), to: at(31) });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].walletId, JOINT_WALLET);
+  assert.ok(calls.length > 0);
+  for (const call of calls) assert.equal(call.walletId, JOINT_WALLET);
 });
 
 test('de-duplicates rows that overlap a page boundary', async () => {
@@ -45,12 +45,17 @@ test('drops rows belonging to another pocket in the same wallet', async () => {
   assert.deepEqual(out.map(r => r.id), ['mine', 'mine-2']);
 });
 
-test('stops once rows are older than `from`', async () => {
+test('stops shortly after rows are older than `from`, and keeps only the range', async () => {
+  // The walk reads a settlement-lag margin past `from` rather than stopping at
+  // the first completion below it: on a server that orders by start date, a
+  // payment that cleared inside the range can sit below one that did not.
+  // Rows outside the range are discarded here, so the margin costs requests,
+  // never rows.
   const rows = [t(20, 'a'), t(10, 'b'), t(2, 'old')];
   const { get, calls } = feed(rows);
   const out = await fetchRange({ get, handle, from: at(9), to: at(31), pageSize: 2 });
   assert.deepEqual(out.map(r => r.id), ['a', 'b']);
-  assert.equal(calls.length, 2, 'should stop paging once a page reaches past `from`');
+  assert.ok(calls.length <= 6, `should settle quickly, took ${calls.length}`);
 });
 
 test('excludes rows outside the half-open range', async () => {
@@ -75,10 +80,14 @@ test('terminates when every row shares one timestamp', async () => {
   assert.deepEqual(out.map(r => r.id).sort(), ['x', 'y', 'z']);
 });
 
-test('stops on an empty page', async () => {
+test('stops on an empty page, but only once it has been confirmed', async () => {
+  // This endpoint has been seen answering 200 with an empty array while the
+  // account still has transactions, so a single empty answer is not proof the
+  // feed ran out. The cost of asking twice is one request on an empty month;
+  // the cost of believing the first answer is every row older than it.
   const { get, calls } = feed([]);
   await fetchRange({ get, handle, from: at(1), to: at(31) });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test('enforces a hard page cap', async () => {

@@ -66,14 +66,61 @@ test('amountWithCharges is accepted where it explains the balance', () => {
   assert.doesNotThrow(() => assertContinuous(rows));
 });
 
-test('rows without balances are skipped rather than rejected', () => {
-  // PENDING rows carry no settled balance; that is absence of evidence.
+test('a PENDING row rides along without breaking the chain around it', () => {
+  // A PENDING row carries no settled balance because it has not moved one. The
+  // settled rows either side must still chain directly across it.
   const rows = [
     { id: 'a', amount: -100, balance: 900 },
     { id: 'pending', amount: -50, balance: null },
-    { id: 'c', amount: -200, balance: 700 }
+    { id: 'c', amount: -200, balance: 1000 }
   ];
   assert.doesNotThrow(() => assertContinuous(rows));
+});
+
+test('a PENDING row sitting exactly at a gap does not hide it', () => {
+  // The row that causes a paging gap is often the row that lands in it: the
+  // cursor jumps to a stale pre-authorisation's start date, and the block it
+  // skipped is bounded by that same row. Letting a null balance satisfy the
+  // link across it put the one blind spot exactly where gaps appear.
+  const rows = [
+    { id: 'a', amount: -100, balance: 900 },
+    { id: 'pending', amount: -50, balance: null },
+    { id: 'c', amount: -200, balance: 700 }  // 900 - (-100) = 1000, not 700
+  ];
+  assert.throws(() => assertContinuous(rows), IncompleteExportError);
+});
+
+test('a batch settled at one instant is not order-dependent', () => {
+  // Rows sharing an instant come back in whatever order the server used; there
+  // is no documented tiebreaker. Checking them pairwise as delivered raised on
+  // a complete export -- an overnight batch made the file impossible to write.
+  // 400 -> +100 -> +200 -> +300 -> 1000, then the newer row takes it to 1050.
+  const batch = [
+    { id: 'b1', amount: 100, balance: 500 },
+    { id: 'b2', amount: 200, balance: 700 },
+    { id: 'b3', amount: 300, balance: 1000 }
+  ].map(row => ({ ...row, completedDate: 5_000 }));
+  const outer = [
+    { id: 'newer', amount: 50, balance: 1050, completedDate: 9_000 },
+    { id: 'older', amount: -10, balance: 400, completedDate: 1_000 }
+  ];
+  // every delivery order of the batch must behave identically
+  for (const order of [[0, 1, 2], [2, 1, 0], [1, 0, 2], [0, 2, 1], [2, 0, 1], [1, 2, 0]]) {
+    const rows = [outer[0], ...order.map(i => batch[i]), outer[1]];
+    assert.doesNotThrow(() => assertContinuous(rows), `order ${order.join('')} raised`);
+  }
+});
+
+test('a row missing from a batch settled at one instant is still caught', () => {
+  // Order-independence must not become blindness: the batch has to account for
+  // the balance it consumed, whatever order its rows arrive in.
+  const rows = [
+    { id: 'newer', amount: 50, balance: 1050, completedDate: 9_000 },
+    { id: 'b1', amount: 100, balance: 500, completedDate: 5_000 },
+    { id: 'b3', amount: 300, balance: 1000, completedDate: 5_000 },  // b2 dropped
+    { id: 'older', amount: -10, balance: 400, completedDate: 1_000 }
+  ];
+  assert.throws(() => assertContinuous(rows), IncompleteExportError);
 });
 
 test('a set with no balance movement proves nothing and is left alone', () => {

@@ -1,5 +1,10 @@
 name: test
 
+# Actions are pinned to commit SHAs, not tags. This project takes no runtime or
+# development dependencies because every dependency is code a user would have to
+# trust without reading; the actions below are the only third-party code that runs
+# anywhere in it, and a mutable tag would exempt exactly that code from the rule.
+
 on:
   push:
     branches: [main]
@@ -12,8 +17,8 @@ jobs:
       matrix:
         node: ['20', '22', '24']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
       # No install step: this project has no dependencies, by design.
@@ -22,7 +27,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The invariant a link cannot satisfy, and the one Chrome actually enforces.
       - name: host_permissions must name exactly one host

@@ -152,3 +152,67 @@ test('a stall on a page of several distinct instants still checks for older rows
     }
   );
 });
+
+test('a stale PENDING row from an earlier month does not end the walk', async () => {
+  // No filter is applied on transaction state, so a pre-authorisation that never
+  // completed rides along in the feed, placed by its start date. Folding that
+  // start date into the page's minimum made a single request look like it had
+  // reached the start of history: 201 of 400 rows were dropped, with no error
+  // and an intact balance chain, because the loss was at the old end where the
+  // chain is blind. Paging decisions are made on completion dates only.
+  const all = desc(Array.from({ length: 400 }, (_, i) => row(30 - (i % 29), `in${i}`, i)));
+  const stale = {
+    ...txnIn(JOINT_POCKET, 15, 'stale-preauth'),
+    state: 'PENDING',
+    startedDate: Date.UTC(2026, 6, 15), // last month, never completed
+    completedDate: null,
+    balance: null
+  };
+  // `ORDER BY completed_date DESC` puts nulls first in PostgreSQL, so it leads
+  // the feed -- but the walk must survive it appearing anywhere.
+  for (const served of [[stale, ...all], [...all, stale]]) {
+    const get = async (_p, params) =>
+      served.filter(r => (r.completedDate ?? r.startedDate) <= params.to).slice(0, params.count);
+    const out = await fetchRange({ get, handle, from: FROM, to: TO });
+    assert.equal(out.length, all.length, `expected every row, got ${out.length} of ${all.length}`);
+  }
+});
+
+test('a transient empty page does not truncate the export', async () => {
+  // `docs/api-notes.md` records this endpoint answering 200 with an empty array
+  // while the account still has transactions. Page length is not treated as
+  // evidence anywhere else in the walk, and an empty page is page length.
+  const all = desc(Array.from({ length: 500 }, (_, i) => row(30 - (i % 29), `r${i}`, i)));
+  let calls = 0;
+  const get = async (_p, params) => {
+    calls++;
+    if (calls === 2) return []; // one spurious empty answer, mid-walk
+    return all.filter(r => r.completedDate <= params.to).slice(0, params.count);
+  };
+
+  const out = await fetchRange({ get, handle, from: FROM, to: TO });
+  assert.equal(out.length, all.length, `expected every row, got ${out.length} of ${all.length}`);
+});
+
+test('a tie group larger than any page refuses rather than dropping its tail', async () => {
+  // The walk widens to a ceiling; a group bigger than that ceiling cannot be
+  // read whole by any request, and stepping past it drops the remainder at the
+  // OLDEST end of the range -- the one place the balance chain is blind. This
+  // returned 2030 of 2430 rows with no error.
+  const t = Date.UTC(2026, 7, 15, 3);
+  const tie = Array.from({ length: 2400 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 15, `tie${i}`), amount: -(100 + i), startedDate: t, completedDate: t
+  }));
+  const above = Array.from({ length: 30 }, (_, i) => row(25 - (i % 9), `above${i}`, i));
+  const all = desc([...tie, ...above]);
+  const get = async (_p, params) => all.filter(r => r.completedDate <= params.to).slice(0, params.count);
+
+  await assert.rejects(
+    () => fetchRange({ get, handle, from: FROM, to: TO }),
+    (err) => {
+      assert.ok(err instanceof PaginationError, `expected PaginationError, got ${err}`);
+      assert.match(err.message, /Refusing to write a partial file/);
+      return true;
+    }
+  );
+});

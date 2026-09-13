@@ -25,20 +25,40 @@ const row = (day, id, ms = 0) => {
   return { ...txnIn(JOINT_POCKET, day, id), startedDate: t, completedDate: t };
 };
 
+/**
+ * Lay a running balance over a set of rows, newest first.
+ *
+ * Without this every fixture carries the one constant balance `makeTxn` sets,
+ * `assertContinuous` finds no ledger signal and returns early, and this whole
+ * file asserts "every row, or raise" with the net that makes that true switched
+ * off. A PENDING row keeps a null balance: it has not settled, so it has not
+ * moved one.
+ */
+const ledger = (rows) => {
+  const instant = (row) => row.completedDate ?? row.startedDate;
+  let balance = 500_000;
+  for (const row of [...rows].sort((a, b) => instant(b) - instant(a))) {
+    if (row.completedDate === null) { row.balance = null; continue; }
+    row.balance = balance;
+    balance -= row.amount;
+  }
+  return rows;
+};
+
 const serve = (rows, filter) => async (_path, params) =>
   rows.filter(r => filter(r, params.to)).slice(0, params.count ?? rows.length);
 
 const ids = (out) => out.map(r => r.id).sort();
 
 test('inclusive `to`: returns every row in range', async () => {
-  const rows = [row(30, 'a'), row(20, 'b'), row(10, 'c'), row(5, 'd')];
+  const rows = ledger([row(30, 'a'), row(20, 'b'), row(10, 'c'), row(5, 'd')]);
   const get = serve(rows, (r, to) => r.completedDate <= to);
   assert.deepEqual(ids(await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 })),
     ['a', 'b', 'c', 'd']);
 });
 
 test('exclusive `to`: returns every row in range', async () => {
-  const rows = [row(30, 'a'), row(20, 'b'), row(10, 'c'), row(5, 'd')];
+  const rows = ledger([row(30, 'a'), row(20, 'b'), row(10, 'c'), row(5, 'd')]);
   const get = serve(rows, (r, to) => r.completedDate < to);
   assert.deepEqual(ids(await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 })),
     ['a', 'b', 'c', 'd']);
@@ -47,7 +67,7 @@ test('exclusive `to`: returns every row in range', async () => {
 test('exclusive `to`: a tie straddling a page boundary is not dropped', async () => {
   // 'b' and 'c' share an instant, and the page ends between them. Stepping the
   // cursor onto that instant under exclusive semantics would lose 'c' silently.
-  const rows = [row(30, 'a'), row(20, 'b'), row(20, 'c'), row(10, 'd'), row(5, 'e')];
+  const rows = ledger([row(30, 'a'), row(20, 'b'), row(20, 'c'), row(10, 'd'), row(5, 'e')]);
   const get = serve(rows, (r, to) => r.completedDate < to);
   assert.deepEqual(ids(await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 })),
     ['a', 'b', 'c', 'd', 'e']);
@@ -57,14 +77,14 @@ test('inclusive `to`: a tie group larger than the page still completes', async (
   // Five rows share one instant with a page size of two, so the cursor cannot
   // advance until the page grows to cover the whole group.
   const tied = ['t1', 't2', 't3', 't4', 't5'].map(id => row(20, id));
-  const rows = [row(30, 'newest'), ...tied, row(5, 'oldest')];
+  const rows = ledger([row(30, 'newest'), ...tied, row(5, 'oldest')]);
   const get = serve(rows, (r, to) => r.completedDate <= to);
   assert.deepEqual(ids(await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 })),
     ['newest', 'oldest', 't1', 't2', 't3', 't4', 't5']);
 });
 
 test('`to` ignored entirely: raises rather than truncating', async () => {
-  const rows = [row(30, 'a'), row(20, 'b'), row(10, 'c'), row(5, 'd')];
+  const rows = ledger([row(30, 'a'), row(20, 'b'), row(10, 'c'), row(5, 'd')]);
   const get = serve(rows, () => true);
   await assert.rejects(
     () => fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 }),
@@ -79,11 +99,11 @@ test('`to` ignored entirely: raises rather than truncating', async () => {
 test('`to` compared against the started date: no false failure', async () => {
   // Completion trails start, so rows newer than the cutoff come back routinely.
   // The previous guard rejected this outright; it must not.
-  const rows = [30, 20, 10, 5].map((d, i) => {
+  const rows = ledger([30, 20, 10, 5].map((d, i) => {
     const r = row(d, `r${i}`);
     r.completedDate = r.startedDate + 36e5; // cleared an hour later
     return r;
-  });
+  }));
   const get = serve(rows, (r, to) => r.startedDate <= to);
   const out = await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 });
   assert.equal(out.length, 4);
@@ -100,7 +120,7 @@ test('`to` rounded coarser than a millisecond: refuses rather than guesses', asy
   // right way round: a refusal is visible and reportable, a short file that
   // reconciles wrongly is not.
   const endOfDay = (t) => { const d = new Date(t); d.setUTCHours(23, 59, 59, 999); return d.getTime(); };
-  const rows = [row(30, 'a'), row(30, 'a2', 1000), row(20, 'b'), row(10, 'c'), row(5, 'd')];
+  const rows = ledger([row(30, 'a'), row(30, 'a2', 1000), row(20, 'b'), row(10, 'c'), row(5, 'd')]);
   const get = serve(rows, (r, to) => r.completedDate <= endOfDay(to));
   await assert.rejects(
     () => fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 }),
@@ -115,7 +135,7 @@ test('`to` rounded coarser than a millisecond: refuses rather than guesses', asy
 test('rows with no completion date ride along: no false failure', async () => {
   // PENDING rows carry a null completedDate; instantOf falls back to startedDate.
   const pending = { ...row(25, 'pending'), completedDate: null };
-  const rows = [row(30, 'a'), pending, row(10, 'c'), row(5, 'd')];
+  const rows = ledger([row(30, 'a'), pending, row(10, 'c'), row(5, 'd')]);
   const get = serve(rows, (r, to) => (r.completedDate ?? r.startedDate) <= to);
   const out = await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 });
   assert.deepEqual(ids(out), ['a', 'c', 'd', 'pending']);
@@ -126,10 +146,10 @@ test('a small account settles in a handful of requests', async () => {
   // costs one extra request: the walk asks whether anything older exists rather
   // than inferring it from page length. That inference was wrong three separate
   // ways, so the request is the cheaper mistake.
-  const rows = [row(20, 'a'), row(19, 'b')];
+  const rows = ledger([row(20, 'a'), row(19, 'b')]);
   let calls = 0;
   const get = async (_p, params) => { calls++; return rows.filter(r => r.completedDate <= params.to); };
   const out = await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 200 });
   assert.deepEqual(ids(out), ['a', 'b']);
-  assert.ok(calls <= 5, `expected to settle quickly, took ${calls} calls`);
+  assert.ok(calls <= 6, `expected to settle quickly, took ${calls} calls`);
 });

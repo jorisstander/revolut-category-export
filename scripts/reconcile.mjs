@@ -66,7 +66,7 @@ const read = (path, label) => {
 };
 
 const ours = read(oursPath, 'exported');
-const official = read(officialPath, "official");
+const official = read(officialPath, 'official');
 
 const sum = (rows) => rows.reduce((total, row) => total + amountOf(row), 0);
 const round = (n) => Math.round(n * 100) / 100;
@@ -75,22 +75,42 @@ console.log(`ours     : ${ours.length} rows, sum ${round(sum(ours))}`);
 console.log(`official : ${official.length} rows, sum ${round(sum(official))}`);
 
 const keyOf = keyFactory(ours, official);
-const oursByKey = new Map(ours.map(r => [keyOf(r), r]));
-const officialByKey = new Map(official.map(r => [keyOf(r), r]));
-const onlyOurs = [...oursByKey.keys()].filter(k => !officialByKey.has(k));
-const onlyOfficial = [...officialByKey.keys()].filter(k => !oursByKey.has(k));
+// Bucket rather than index: two rows can share a composite key (same instant,
+// amount and description), and collapsing them would hide a real difference on
+// whichever side held the duplicate.
+const bucket = (rows) => {
+  const map = new Map();
+  for (const row of rows) {
+    const key = keyOf(row);
+    if (map.has(key)) map.get(key).push(row);
+    else map.set(key, [row]);
+  }
+  return map;
+};
+// Rows on this side with no counterpart left on the other, duplicates included.
+const unmatched = (mine, theirs) => {
+  const out = [];
+  for (const [key, rows] of mine) {
+    const surplus = rows.length - (theirs.get(key)?.length ?? 0);
+    for (let i = 0; i < surplus; i++) out.push(rows[i]);
+  }
+  return out;
+};
+
+const oursByKey = bucket(ours);
+const officialByKey = bucket(official);
+const onlyOurs = unmatched(oursByKey, officialByKey);
+const onlyOfficial = unmatched(officialByKey, oursByKey);
 
 if (onlyOurs.length) {
   console.log(`\nIn our export only (${onlyOurs.length}):`);
-  for (const k of onlyOurs.slice(0, 20)) {
-    const r = oursByKey.get(k);
+  for (const r of onlyOurs.slice(0, 20)) {
     console.log(`  ${pick(r, ['Started Date'])}  ${pick(r, ['Amount'])}  ${pick(r, ['State'])}  ${pick(r, ['Description'])}`);
   }
 }
 if (onlyOfficial.length) {
   console.log(`\nIn Revolut's export only (${onlyOfficial.length}):`);
-  for (const k of onlyOfficial.slice(0, 20)) {
-    const r = officialByKey.get(k);
+  for (const r of onlyOfficial.slice(0, 20)) {
     console.log(`  ${pick(r, ['Started Date'])}  ${pick(r, ['Amount'])}  ${pick(r, ['State'])}  ${pick(r, ['Description'])}`);
   }
 }
@@ -103,6 +123,10 @@ const categories = new Set(ours.map(r => r.Category).filter(Boolean));
 console.log(`distinct categories: ${categories.size}`, categories.size ? `(${[...categories].slice(0, 8).join(', ')})` : '');
 if (categories.size <= 1) console.log('WARNING: one or zero distinct categories — the category column may not be populated.');
 
-const matches = ours.length === official.length && round(sum(ours)) === round(sum(official));
+// The diff decides the verdict. Equal counts and an equal total are not a
+// match: one row substituted for another clears both while the export is wrong,
+// and a silently wrong export is the failure this whole project exists to catch.
+const matches = onlyOurs.length === 0 && onlyOfficial.length === 0 &&
+  ours.length === official.length && round(sum(ours)) === round(sum(official));
 console.log(`\n${matches ? 'MATCH' : 'MISMATCH'}`);
 process.exit(matches ? 0 : 1);
