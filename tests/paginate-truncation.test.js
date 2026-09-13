@@ -216,3 +216,40 @@ test('a tie group larger than any page refuses rather than dropping its tail', a
     }
   );
 });
+
+test('a stalled page holding one slow-settling row does not skip the rest of the month', async () => {
+  // The stall probe used to ask for rows below the earliest START date on the
+  // page. One member of a batch that began weeks before it settled dragged that
+  // cutoff below `from`, so the probe stepped over every row completing in
+  // between; the walk resumed below the range and stopped. 250 rows of 1100,
+  // no error, because the loss lands at the end the balance chain cannot see.
+  const tie = Date.UTC(2026, 7, 20, 3);
+  const CAP = 500;
+  const batch = Array.from({ length: 600 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 20, `tie${i}`), amount: -(10 + i % 40), startedDate: tie, completedDate: tie
+  }));
+  batch[0].startedDate = tie - 19 * 864e5; // began weeks before it settled
+  const below = Array.from({ length: 300 }, (_, i) => row(2 + (i % 17), `below${i}`, i));
+  const above = Array.from({ length: 200 }, (_, i) => row(21 + (i % 9), `above${i}`, i));
+  const all = desc([...batch, ...below, ...above]);
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= params.to).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a large batch below the range does not abort the month above it', async () => {
+  // The walk reads a settlement margin past `from`. A batch sitting in that
+  // margin is outside the export entirely, so stalling on it must not turn a
+  // complete month into a refusal.
+  const inRange = Array.from({ length: 200 }, (_, i) => row(2 + (i % 28), `in${i}`, i));
+  const batchAt = FROM - 4 * 864e5;
+  const batch = Array.from({ length: 2400 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `batch${i}`), amount: -10, startedDate: batchAt, completedDate: batchAt
+  }));
+  const all = desc([...inRange, ...batch]);
+  const get = async (_p, params) => all.filter(r => r.completedDate <= params.to).slice(0, params.count);
+
+  const out = await fetchRange({ get, handle, from: FROM, to: TO });
+  assert.equal(out.length, inRange.length, `expected the month, got ${out.length} of ${inRange.length}`);
+});

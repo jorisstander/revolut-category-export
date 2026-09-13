@@ -151,13 +151,29 @@ Two further rules follow from the same principle, that page shape is not evidenc
 The walk also reads a week below the start of the range before calling it covered. A
 transaction belongs to a month by when it *completed*, but the server may order the feed by
 when each one *started*; under that ordering a payment started on the 31st and cleared on
-the 2nd sits below one that started later and cleared at once. The margin costs at most an
-extra page, and rows outside the range are discarded either way.
+the 2nd sits below one that started later and cleared at once. The margin is free for an
+ordinary month — those rows sit inside a page that would have been read anyway — and costs
+about a week's transactions divided by the page size for a busy one: measured, nothing up
+to 400 rows a month, one request at 1000, three at 3000. Rows outside the range are
+discarded either way. A stall *inside* that margin ends the walk rather than raising: it is
+activity outside the month being exported, and it should not be able to abort it.
 
-Measured against the module, with the default page size: a quiet month is one request, a
-normal month two, a busy month of 400 rows three. An account whose history runs out inside
-the range is the dearest case at five or six, because that is the path that asks the extra
-question rather than assuming the answer.
+When the walk stalls, the question it asks the server is shaped by the answer to the last
+one. The first probe reaches one millisecond below the oldest *completion* on the page.
+Reaching below the oldest *start* date instead looks safer — it excludes those rows whichever
+field the server compares — but against a completion-keyed server it steps over every row
+that completed in between, and the walk then resumes below the range and stops: 250 rows of
+1100, silently. Only if that first probe comes back with nothing older does the wider cutoff
+get used, and by then a completion-keyed server has ruled itself out, because it could not
+have answered that way.
+
+Cost scales with the size of the range, because one request carries at most one page.
+Measured against the module at the default page size: a month of 20 rows is one request, 200
+is two, 400 is three, 1000 is six, 2000 is eleven, 5000 is twenty-six. An account whose
+history runs out inside the range costs two to four more, because that is the path that asks
+the extra question rather than assuming the answer. The 40-page budget is therefore also a
+ceiling on how large a range one export can cover — around 8000 rows — and a range holding
+more than that refuses rather than paging on.
 
 ### Completeness is verified, not assumed
 
@@ -181,23 +197,40 @@ Rows that share an instant are checked as a group rather than in the order they 
 There is no documented tiebreaker, so the delivery order of an overnight batch settlement
 is not its ledger order, and comparing those rows pairwise as delivered raised
 `IncompleteExportError` on a complete export — the file became impossible to write.
-Whatever order the group is in, each row's balance is the next one's "balance before"
-except at the two ends, so cancelling those two sets identifies the ends without needing
-the order. A row missing from the batch still fails to cancel, and still raises.
+Order is not needed to prove nothing is missing. Read each row as a step from the balance
+before it to the balance after it: the group is complete exactly when those steps form one
+unbroken run using every row once. That takes two tests — the steps must all belong to a
+single connected run, and at each balance the number of steps arriving must match the number
+leaving, save at the two ends. Counting alone is not enough, because a valid run sitting
+beside an unconnected loop cancels out exactly, and the rows missing between them would pass
+unseen.
 
-Three things switch the check off, each deliberate and each a limit worth knowing:
+A group whose steps cancel completely is complete too: it ends on the balance it began from.
+A payment settling beside its own reversal does that, and so does a pair of zero-amount
+authorisations, which this feed is known to emit. Treating that as an accusation refused
+8.2% of randomly generated complete batches, which made those months impossible to export at
+all. Which balance such a group sat at is decided by the rows around it rather than by the
+group itself.
+
+Four things switch the check off, each deliberate and each a limit worth knowing:
 
 - A row carrying no settled balance takes no part. A `PENDING` row has not moved the
   balance, so the settled rows either side must still chain directly across it — which is
   what closed the hole where a pending row sitting exactly at a paging gap concealed it.
 - A row with no `amount` cannot be subtracted, so the chain cannot be continued across it.
+- Where any row in a group carries a non-zero `fee`, the group declines to conclude. A fee
+  accounted for separately from the amount shifts a step by exactly the fee, which cannot be
+  told apart from a missing row; a lone row is given that latitude, so a row must not lose
+  it merely by sharing an instant with another.
 - A set whose balances never move carries no ledger information at all. Pockets that
   report no `balance` field therefore get no completeness check, and the guarantee above
   quietly does not apply to them.
 
-Three deliberate limits. A server that rounds its cutoff coarser than a millisecond cannot
-be walked safely — the signature is identical to one ignoring the parameter entirely, so
-the tool refuses rather than guess. More transactions sharing a single timestamp than one
+Three deliberate limits. A server that rounds its cutoff coarser than a millisecond is
+usually walked to completion regardless — a day-granular cutoff exports a 1000-row month in
+seven requests, every row — but where the coarseness actually pins the cursor, the signature
+is identical to a server ignoring the parameter entirely, and the tool refuses rather than
+guess. More transactions sharing a single timestamp than one
 page can return cannot be read whole by any request, so that refuses too: stepping past
 them would drop the remainder at the oldest end of the range, where the balance chain
 cannot see it. And the request budget is 40 pages: these calls go to someone's bank, and a

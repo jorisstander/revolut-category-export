@@ -25,28 +25,21 @@ const BOM = String.fromCharCode(0xFEFF);
 // Written as char codes to keep the intent readable: = + - @
 const FORMULA_LEAD = new Set([0x3d, 0x2b, 0x2d, 0x40]);
 
-// SPACE TAB LF VT FF CR. A spreadsheet trims these on import and then parses
-// what follows, so whitespace in front of a formula is a way through rather
-// than a reason to relax: the lead character is read past it, not at index 0.
-const BLANK = new Set([0x20, 0x09, 0x0a, 0x0b, 0x0c, 0x0d]);
-
-function leadCharCode(text) {
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (!BLANK.has(code)) return code;
-  }
-  return null;
-}
-
 // Amounts, fees and balances legitimately begin with a minus, and must not be
 // escaped, or every numeric column would import as text and stop summing.
 const PLAIN_NUMBER = /^-?[0-9]+([.][0-9]+)?$/;
 
 function cell(value) {
   const raw = value == null ? '' : String(value);
-  const lead = leadCharCode(raw);
+  // Leading whitespace is not a defence: a spreadsheet trims it on import and
+  // then parses what follows, so a space, tab or non-breaking space in front of
+  // `=` is a way through rather than a reason to relax. Both tests below read
+  // the same trimmed text, so the two halves cannot disagree about what counts
+  // as blank -- an earlier version checked an ASCII-only set against a Unicode
+  // trim, and let a non-breaking space through.
+  const body = raw.trimStart();
   let s = raw;
-  if (lead !== null && FORMULA_LEAD.has(lead) && !PLAIN_NUMBER.test(raw.trim())) {
+  if (body && FORMULA_LEAD.has(body.charCodeAt(0)) && !PLAIN_NUMBER.test(body)) {
     s = "'" + raw;
   }
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;

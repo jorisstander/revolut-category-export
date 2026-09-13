@@ -42,8 +42,12 @@ const amountOf = (row) => {
 // on whatever it happens to carry puts them in disjoint key spaces, so every row
 // reads as present on one side only -- a diff that can never match. The id is
 // only usable when BOTH sides have one.
+// Keyed on the PARSED amount, not the raw cell. Revolut writes amounts in the
+// locale of the account, so the same transaction can read -1234.56 on one side
+// and "-1.234,56" on the other; keying on the raw text reported every row as
+// one-sided while the totals agreed to the penny.
 const composite = (row) =>
-  `${pick(row, ['Started Date', 'Completed Date'])}|${pick(row, ['Amount'])}|${pick(row, ['Description'])}`;
+  `${pick(row, ['Started Date', 'Completed Date'])}|${amountOf(row).toFixed(2)}|${pick(row, ['Description'])}`;
 
 const keyFactory = (a, b) => {
   const bothHaveIds = [a, b].every(rows => rows.length > 0 && rows.every(row => pick(row, ['Transaction ID'])));
@@ -67,6 +71,22 @@ const read = (path, label) => {
 
 const ours = read(oursPath, 'exported');
 const official = read(officialPath, 'official');
+
+// Check every amount before any comparison, so a malformed file ends with a
+// message naming the line rather than a stack trace and an exit code that looks
+// exactly like a mismatch.
+const checkAmounts = (rows, label) => {
+  rows.forEach((row, i) => {
+    try {
+      amountOf(row);
+    } catch (error) {
+      console.error(`Could not read the ${label} CSV: line ${i + 2}: ${error.message}`);
+      process.exit(2);
+    }
+  });
+};
+checkAmounts(ours, 'exported');
+checkAmounts(official, 'official');
 
 const sum = (rows) => rows.reduce((total, row) => total + amountOf(row), 0);
 const round = (n) => Math.round(n * 100) / 100;

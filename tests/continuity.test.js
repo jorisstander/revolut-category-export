@@ -138,3 +138,53 @@ test('an empty or single-row set passes', () => {
   assert.deepEqual(assertContinuous([]), []);
   assert.equal(assertContinuous([{ id: 'only', amount: -100, balance: 5 }]).length, 1);
 });
+
+test('a payment settling beside its own reversal is not called a gap', () => {
+  // The pair cancels, so the batch ends on the balance it began from. Reading
+  // that as "nothing entered or left" made the whole month impossible to
+  // export: 8.2% of random complete batches were refused this way.
+  const rows = [
+    { id: 'newer', amount: -50, balance: 950, completedDate: 9_000 },
+    { id: 'reversal-1', amount: 200, balance: 1000, completedDate: 5_000 },
+    { id: 'payment-1', amount: -200, balance: 800, completedDate: 5_000 },
+    { id: 'older', amount: -10, balance: 1000, completedDate: 1_000 }
+  ];
+  assert.doesNotThrow(() => assertContinuous(rows));
+});
+
+test('two zero-amount authorisations sharing an instant are not called a gap', () => {
+  // `docs/api-notes.md` records this feed emitting zero-amount authorisations.
+  const rows = [
+    { id: 'newer', amount: -50, balance: 950, completedDate: 9_000 },
+    { id: 'auth-a', amount: 0, balance: 1000, completedDate: 5_000 },
+    { id: 'auth-b', amount: 0, balance: 1000, completedDate: 5_000 },
+    { id: 'older', amount: -10, balance: 1000, completedDate: 1_000 }
+  ];
+  assert.doesNotThrow(() => assertContinuous(rows));
+});
+
+test('a run beside a separate loop is caught, though the counts balance', () => {
+  // Counting arrivals against departures is not enough on its own: a valid run
+  // and an unconnected loop cancel exactly, and the rows missing between them
+  // would pass unseen. The two must also form ONE connected run.
+  const rows = [
+    { id: 'newer', amount: -50, balance: 950, completedDate: 9_000 },
+    { id: 'p1', amount: 100, balance: 1000, completedDate: 5_000 },  // run:  900 -> 1000
+    { id: 'c1', amount: 40, balance: 500, completedDate: 5_000 },    // loop: 460 -> 500
+    { id: 'c2', amount: -40, balance: 460, completedDate: 5_000 },   // loop: 500 -> 460
+    { id: 'older', amount: -10, balance: 900, completedDate: 1_000 }
+  ];
+  assert.throws(() => assertContinuous(rows), IncompleteExportError);
+});
+
+test('a fee accounted for separately keeps its latitude inside a group', () => {
+  // A lone row is allowed either fee convention. Sharing an instant with another
+  // row must not silently withdraw that, or a complete export starts raising.
+  const rows = [
+    { id: 'newer', amount: -50, fee: 0, balance: 950, completedDate: 9_000 },
+    { id: 'f1', amount: -1000, fee: 25, balance: 1000, completedDate: 5_000 },
+    { id: 'f2', amount: -500, fee: 0, balance: 2025, completedDate: 5_000 },
+    { id: 'older', amount: -10, fee: 0, balance: 2525, completedDate: 1_000 }
+  ];
+  assert.doesNotThrow(() => assertContinuous(rows));
+});

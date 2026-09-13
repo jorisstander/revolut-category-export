@@ -63,7 +63,8 @@ test('neutralises formula-leading text so a spreadsheet cannot execute it', () =
 test('a formula hidden behind leading whitespace is still neutralised', () => {
   // Spreadsheets trim a leading space or tab and then parse what follows, so
   // testing only the character at index 0 let this straight through.
-  const payloads = [' =HYPERLINK("elsewhere","click")', String.fromCharCode(9) + '=1+1', '  @SUM(1+1)'];
+  const payloads = [' =HYPERLINK("elsewhere","click")', String.fromCharCode(9) + '=1+1', '  @SUM(1+1)',
+    String.fromCharCode(0x00a0) + '=1+1'];  // non-breaking space: trimmed on import like any other
   for (const description of payloads) {
     const line = body(toCsv([{ ...row, description }]))[1];
     assert.ok(line.includes("'"), 'not neutralised: ' + JSON.stringify(line));

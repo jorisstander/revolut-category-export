@@ -5,10 +5,16 @@ import { TRANSACTIONS_PATH } from './http.js';
 const DEFAULT_PAGE_SIZE = 200;
 // A budget, not just a loop guard. These requests go to someone's bank, and a
 // server behaving unexpectedly could otherwise drive hundreds of them -- which
-// is its own harm regardless of what comes back. Measured: a quiet month costs
-// one request, a normal month two, a busy month of 400 rows three, and the
-// dearest path -- an account whose history runs out inside the range -- five or
-// six. Anything near this ceiling is not a large month, it is something wrong.
+// is its own harm regardless of what comes back.
+//
+// Cost scales with the size of the range, because one request carries at most
+// one page. Measured against this module at the default page size: a month of
+// 20 rows costs one request, 200 two, 400 three, 1000 six, 2000 eleven, 5000
+// twenty-six. So this ceiling is also a limit on how large a range one export
+// can cover -- roughly this many pages times the page size, around 8000 rows --
+// and a range holding more than that refuses rather than paging on. That is the
+// intended trade: a personal account does not see 8000 transactions in a month,
+// and a visible refusal beats an unbounded run of requests against a bank.
 const DEFAULT_MAX_PAGES = 40;
 
 // Ceiling for the page-size escalation used when one timestamp fills a page.
@@ -21,9 +27,11 @@ const MAX_PAGE_SIZE = 2000;
 // behaviours this module refuses to guess about. Under that ordering a payment
 // started on the 31st and cleared on the 2nd sits below a same-day payment that
 // started later and cleared immediately, so stopping the moment a completion
-// falls below `from` can leave it unread. Reading a week further costs at most
-// an extra page and removes the guess; rows outside the range are discarded at
-// the end either way.
+// falls below `from` can leave it unread. The margin is free for an ordinary
+// month -- those rows sit inside a page that would have been read anyway -- and
+// costs about a week's transactions divided by the page size for a busy one:
+// measured, nothing up to 400 rows a month, one request at 1000, three at 3000.
+// Rows outside the range are discarded at the end either way.
 const SETTLEMENT_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class PaginationError extends Error {
@@ -45,6 +53,21 @@ export class PaginationError extends Error {
  * the old end where the chain cannot see it.
  */
 const completionsOf = (rows) => rows.map(row => row.completedDate).filter(value => typeof value === 'number');
+
+/**
+ * What identifies a row across the overlapping pages the walk reads.
+ *
+ * The id, where there is one. `normalize.js` treats a missing id as ordinary
+ * rather than an error, and keying those on `undefined` collapsed every one of
+ * them into a single entry -- so they fall back to what the row is made of.
+ */
+const keyOf = (row) => (row.id ?? `${row.startedDate}|${row.completedDate}|${row.amount}|${row.description}`);
+
+/** The oldest completion on a page, or null when nothing on it has settled. */
+const oldestCompletion = (rows) => {
+  const completions = completionsOf(rows);
+  return completions.length > 0 ? Math.min(...completions) : null;
+};
 
 /**
  * Page backwards through the transaction feed until `from` is passed.
@@ -93,13 +116,16 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   // transactions (docs/api-notes.md), and page length is not treated as evidence
   // anywhere else in this walk -- it cannot be the one exception here, because
   // believing a spurious empty page mid-walk drops everything older than it.
+  // The second ask is deliberately not byte-identical: an empty answer produced
+  // by throttling or a cache is the least likely to differ when the question is
+  // repeated exactly, and one extra row costs nothing.
   const requestConfirmed = async (size, cutoff) => {
     const page = await request(size, cutoff);
-    return page.length > 0 ? page : request(size, cutoff);
+    return page.length > 0 ? page : request(size + 1, cutoff);
   };
 
   const collect = (rows) => {
-    for (const row of rowsBelongingTo(rows, handle.pocketId)) mine.set(row.id, row);
+    for (const row of rowsBelongingTo(rows, handle.pocketId)) mine.set(keyOf(row), row);
   };
 
   while (true) {
@@ -148,6 +174,13 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       continue;
     }
 
+    // Past the range proper. Everything from `from` upward has already been
+    // read, and what is left below is only the settlement margin. A stalled
+    // batch down here says nothing about the month being exported, so the walk
+    // ends rather than refusing over activity outside the range: a 2400-row
+    // batch a few days below `from` used to turn a clean export into an error.
+    if (floor < from) break;
+
     // The page came back full at the ceiling with the cursor still pinned, so
     // there may be more rows at this instant than any single request can return.
     // Stepping past them would drop the remainder at the oldest end of the
@@ -165,29 +198,42 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // than inferring an answer from the page: page length cannot distinguish an
     // exhausted feed from a server capping its response.
     //
-    // The cutoff goes one millisecond below the EARLIEST date on the settled
-    // rows, not below `floor`. Which field the server compares is unknown, and a
-    // cutoff below every date on those rows excludes them under either choice --
-    // whereas `floor - 1` still includes them on a server keyed to start dates.
-    const earliest = Math.min(...rows
-      .filter(row => typeof row.completedDate === 'number')
-      .flatMap(row => [row.startedDate, row.completedDate])
-      .filter(value => typeof value === 'number'));
-
-    const older = await requestConfirmed(pageSize, (Number.isFinite(earliest) ? earliest : floor) - 1);
+    // The first cutoff goes one millisecond below the oldest COMPLETION here.
+    // Reaching below the oldest START date instead looked safer, because it
+    // excludes these rows whichever field the server compares -- but on a
+    // completion-keyed server it steps clean over every row that completed
+    // between that start date and this instant. The walk then resumes below
+    // `from` and stops, and the loss lands at the oldest end of the range, where
+    // the balance chain cannot see it: 250 rows of 1100, silently.
+    let older = await requestConfirmed(pageSize, floor - 1);
     if (older.length === 0) break;
-
     collect(older);
-    const olderCompletions = completionsOf(older);
+    let olderFloor = oldestCompletion(older);
+
+    // Rows came back, but none of them older by completion. Either the feed ends
+    // here, or the server is not comparing `to` against the completion date at
+    // all. That second case is now established rather than assumed, and it is
+    // what makes the wider cutoff safe to use: a completion-keyed server could
+    // not have answered this way, so widening cannot step over its rows.
+    if (olderFloor !== null && olderFloor >= floor) {
+      const earliest = Math.min(...rows
+        .filter(row => typeof row.completedDate === 'number')
+        .flatMap(row => [row.startedDate, row.completedDate])
+        .filter(value => typeof value === 'number'));
+      if (Number.isFinite(earliest) && earliest < floor) {
+        older = await requestConfirmed(pageSize, earliest - 1);
+        if (older.length === 0) break;
+        collect(older);
+        olderFloor = oldestCompletion(older);
+      }
+    }
 
     // The probe asked for settled transactions older than this page and the
     // server returned none. Anything unsettled it did return has been collected
     // above; there is no more settled history to page into. Raising here would
     // make an account un-exportable because of a stale pre-authorisation sitting
     // at the bottom of its feed.
-    if (olderCompletions.length === 0) break;
-
-    const olderFloor = Math.min(...olderCompletions);
+    if (olderFloor === null) break;
 
     if (olderFloor >= floor) {
       throw new PaginationError(
