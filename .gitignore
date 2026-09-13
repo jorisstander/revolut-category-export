@@ -1,0 +1,11 @@
+node_modules/
+*.har
+*.csv
+exports/
+.DS_Store
+*.log
+.env
+# Design sources live here while the popup is being worked on. They bundle
+# third-party editor JavaScript that loads from remote CDNs, which would
+# contradict this project's zero-dependency claim if it were ever committed.
+docs/design/

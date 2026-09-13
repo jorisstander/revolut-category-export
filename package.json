@@ -1,0 +1,32 @@
+{
+  "name": "revolut-category-export",
+  "version": "0.1.0",
+  "description": "Export Revolut transactions to CSV with the category column the official export omits.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Joris Stander",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jorisstander/revolut-category-export.git"
+  },
+  "homepage": "https://github.com/jorisstander/revolut-category-export#readme",
+  "bugs": {
+    "url": "https://github.com/jorisstander/revolut-category-export/issues"
+  },
+  "keywords": [
+    "revolut",
+    "csv",
+    "export",
+    "chrome-extension",
+    "manifest-v3",
+    "personal-finance",
+    "categories"
+  ],
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

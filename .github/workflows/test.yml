@@ -1,0 +1,91 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No install step: this project has no dependencies, by design.
+      - run: npm test
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The invariant a link cannot satisfy, and the one Chrome actually enforces.
+      - name: host_permissions must name exactly one host
+        run: |
+          node -e '
+            const hosts = require("./manifest.json").host_permissions;
+            const want = ["https://app.revolut.com/*"];
+            if (JSON.stringify(hosts) !== JSON.stringify(want)) {
+              console.error("::error::host_permissions changed: " + JSON.stringify(hosts));
+              process.exit(1);
+            }
+            console.log("host_permissions OK: " + JSON.stringify(hosts));
+          '
+
+      # Nothing outside the one client module may open a connection at all. This
+      # is what makes the single-origin claim structural rather than a promise,
+      # and a footer link cannot satisfy it.
+      - name: network calls may only originate from src/core/http.js
+        run: |
+          # spike/snippet.js is a DevTools diagnostic pasted in by hand and never
+          # loaded by the extension; everything else that ships must route through
+          # the one client module. Matches the CALL rather than the line, so a
+          # fetch( sharing a line with the word fetchImpl cannot slip past.
+          if git ls-files 'extension/*' 'src/*' 'scripts/*' \
+             | grep -v '^src/core/http.js$' \
+             | xargs grep -ohE '(fetch|XMLHttpRequest|sendBeacon|importScripts|EventSource|WebSocket)[[:space:]]*\(' \
+             | grep -v '^fetchImpl($' | grep .; then
+            echo "::error::A network call exists outside src/core/http.js"
+            exit 1
+          fi
+          echo "network calls confined to src/core/http.js"
+
+      # Compares scheme+host rather than whole lines or whole URLs, so a template
+      # literal like `https://app.revolut.com${path}` cannot skew the result.
+      # w3.org is the XML namespace inside inline SVG; github.com is this repo's
+      # own links and metadata. Neither is a request -- the step above proves it.
+      # .github is excluded because this file necessarily names the hosts it filters.
+      - name: app.revolut.com must be the only host referenced
+        run: |
+          hosts=$(git ls-files | grep -v '^\.github/' | xargs grep -ohIE 'https?://[A-Za-z0-9.-]+' | sort -u)
+          echo "$hosts"
+          if echo "$hosts" | grep -vE '^(https://app\.revolut\.com|http://www\.w3\.org|https://github\.com)$' | grep .; then
+            echo "::error::Found a URL pointing somewhere other than app.revolut.com"
+            exit 1
+          fi
+
+      # That endpoint returns saved payees -- third-party names and IBANs -- despite
+      # its name. Scoped to code: the docs name it deliberately to explain why.
+      - name: the saved-payees endpoint must never be called
+        run: |
+          if git ls-files 'src/*' 'extension/*' 'scripts/*' 'spike/*' | xargs grep -nI 'user/current/accounts'; then
+            echo "::error::That endpoint returns third-party names and IBANs. It must not be called."
+            exit 1
+          fi
+          echo "saved-payees endpoint not referenced"
+
+      # Extracts the ids themselves, case-insensitively. A line-level filter would
+      # let a real id pass on any line that also held a fixture id.
+      - name: no real account identifiers outside the synthetic fixtures
+        run: |
+          ids=$(git ls-files | xargs grep -EohI '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' | sort -u || true)
+          if echo "$ids" | grep -vE '^(1{8}|2{8}|3{8}|4{8}|5{8}|6{8})-' | grep .; then
+            echo "::error::Looks like a real account id. Fixtures must be synthetic."
+            exit 1
+          fi
+          echo "account identifiers are all synthetic"

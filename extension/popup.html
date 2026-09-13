@@ -1,0 +1,265 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Revolut Category Export</title>
+<style>
+  :root {
+    --bg: #f4efe6;
+    --ink: #26221c;
+    --muted: #7a7264;
+    --rule: #d9d1c3;
+    --dashed: #b9b0a1;
+    --accent: #b5451b;
+    --ok: #3c6e47;
+    --warn: #8a6100;
+    --error: #a83a2a;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  body {
+    width: 320px;
+    min-height: 460px;
+    margin: 0;
+    padding: 22px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 {
+    margin: 0;
+    font: 600 21px/1.15 Georgia, "Times New Roman", serif;
+    letter-spacing: -0.01em;
+  }
+
+  hr {
+    margin: 0;
+    border: 0;
+    border-top: 1px dashed var(--dashed);
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover, a:focus-visible { text-decoration: underline; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 44px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .row.file { min-height: 32px; border-bottom: 0; }
+  #rows.is-inert .row { opacity: 0.55; }
+  #rows:has(#account:disabled) .row.file,
+  #rows:has(#account:disabled) .select-wrap::after { display: none; }
+
+  label, .key {
+    flex: none;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .select-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
+  select {
+    width: 100%;
+    padding: 6px 20px 6px 0;
+    font: inherit;
+    font-weight: 500;
+    color: var(--ink);
+    background: transparent;
+    border: 0;
+    appearance: none;
+    cursor: pointer;
+    text-align: right;
+    text-overflow: ellipsis;
+  }
+  select:disabled { color: var(--muted); cursor: default; }
+  .select-wrap::after {
+    content: "";
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    margin-top: -5px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
+
+  .stepper { display: flex; align-items: center; gap: 4px; margin-right: -9px; }
+  .stepper button {
+    padding: 0;
+    font: inherit;
+    font-weight: 500;
+    color: var(--ink);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .stepper .step {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .stepper .step:disabled { opacity: 0.3; cursor: default; }
+  .stepper svg { display: block; }
+  #month-label { padding: 0 4px; font-variant-numeric: tabular-nums; }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  #filename {
+    min-width: 0;
+    font-size: 11px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #export {
+    width: 100%;
+    height: 46px;
+    font: inherit;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--bg);
+    background: var(--ink);
+    border: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    cursor: pointer;
+  }
+  #export:disabled { opacity: 0.4; cursor: default; }
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    display: none;
+    flex: none;
+  }
+  #export.is-busy .spinner { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+  /* The status block is never display:none, so the live region announces reliably;
+     while empty it simply has no height. */
+  .status-block { display: flex; flex-direction: column; gap: 8px; }
+  .status-block:empty, #status:empty, #status-detail:empty { display: none; }
+  #status { margin: 0; text-wrap: pretty; display: flex; align-items: flex-start; gap: 8px; }
+  #status.ok { color: var(--ok); }
+  #status.ok::before {
+    content: "";
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin-top: 2px;
+    background: currentColor;
+    mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5 6.5 11.5 12.5 5" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>') center / contain no-repeat;
+  }
+  #status.warn { color: var(--warn); }
+  #status.error { color: var(--error); }
+  #status-detail {
+    margin: -4px 0 0 22px;
+    font-size: 11px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #login-link { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; align-self: flex-start; }
+  #login-link svg { display: block; }
+
+  footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+  }
+  footer:not(:has(a:not([hidden]))) { display: none; }
+  footer a { color: var(--muted); }
+
+  :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<h1>Revolut Category Export</h1>
+
+<hr>
+
+<div id="rows">
+  <div class="row">
+    <label for="account">Account</label>
+    <div class="select-wrap">
+      <select id="account" disabled><option>loading accounts…</option></select>
+    </div>
+  </div>
+
+  <div class="row">
+    <span class="key" id="month-key">Month</span>
+    <div class="stepper" role="group" aria-labelledby="month-key">
+      <button type="button" class="step" id="month-prev" aria-label="Previous month">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 4 6 8l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button type="button" id="month-label" aria-describedby="month-hint"></button>
+      <button type="button" class="step" id="month-next" aria-label="Next month">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <input id="month" type="month" class="visually-hidden" tabindex="-1" aria-hidden="true">
+      <span id="month-hint" class="visually-hidden">Opens a month picker</span>
+    </div>
+  </div>
+
+  <div class="row file">
+    <span class="key">File</span>
+    <span id="filename">—</span>
+  </div>
+</div>
+
+<hr>
+
+<button id="export" disabled>
+  <span class="spinner" aria-hidden="true"></span>
+  <span id="export-label">Export CSV</span>
+</button>
+
+<div class="status-block">
+  <p id="status" role="status"></p>
+  <p id="status-detail"></p>
+  <a id="login-link" href="https://app.revolut.com" target="_blank" rel="noopener" hidden>
+    Open app.revolut.com
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 3.5H3.5v9h9v-3M9 3.5h3.5V7M12.5 3.5 7.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </a>
+</div>
+
+<div style="flex: 1"></div>
+
+<footer>
+  <a id="source-link" href="" target="_blank" rel="noopener" hidden>Source on GitHub</a>
+</footer>
+
+<script type="module" src="popup.js"></script>

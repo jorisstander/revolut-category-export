@@ -1,0 +1,6 @@
+# Normalise line endings so contributors on different platforms do not produce
+# whole-file diffs. Everything here is text apart from the images.
+* text=auto eol=lf
+
+*.png binary
+*.svg text eol=lf
