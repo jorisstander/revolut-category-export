@@ -221,7 +221,7 @@ test('a stalled page holding one slow-settling row does not skip the rest of the
   // The stall probe used to ask for rows below the earliest START date on the
   // page. One member of a batch that began weeks before it settled dragged that
   // cutoff below `from`, so the probe stepped over every row completing in
-  // between; the walk resumed below the range and stopped. 250 rows of 1100,
+  // between; the walk resumed below the range and stopped. 700 rows of 1100,
   // no error, because the loss lands at the end the balance chain cannot see.
   const tie = Date.UTC(2026, 7, 20, 3);
   const CAP = 500;
@@ -281,6 +281,33 @@ test('a capped server cannot step past a tie group it truncated', async () => {
     served.filter(r => r.completedDate <= params.to).slice(0, Math.min(params.count, CAP));
 
   await assertEveryRowOrRaise(get, all);
+});
+
+test('an exclusive cutoff does not hide a truncated tie group', async () => {
+  // Every capped fixture here used an inclusive `to`, so the guard that catches a
+  // truncated group was only ever exercised under one of the two semantics this
+  // module refuses to assume between. It had been written to ask a fresh question
+  // at the stalled instant -- which an exclusive cutoff excludes by construction,
+  // so it measured nothing and 170 rows of 350 went missing without a word.
+  const CAP = 120;
+  const tieAt = Date.UTC(2026, 7, 1, 1); // the oldest in-range instant: chain-blind
+  const tie = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),
+    startedDate: tieAt, completedDate: tieAt
+  }));
+  const above = Array.from({ length: 50 }, (_, i) => row(10 + (i % 18), `above${i}`, i));
+  const all = desc([...tie, ...above]);
+  const older = Array.from({ length: 200 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -20,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const served = desc([...all, ...older]);
+
+  for (const cutoff of [(r, to) => r.completedDate < to, (r, to) => r.completedDate <= to]) {
+    const get = async (_p, params) =>
+      served.filter(r => cutoff(r, params.to)).slice(0, Math.min(params.count, CAP));
+    await assertEveryRowOrRaise(get, all);
+  }
 });
 
 test('a probe page filled by stale PENDING rows is not read as the end of the feed', async () => {

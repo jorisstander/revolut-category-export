@@ -8,9 +8,12 @@ const DEFAULT_PAGE_SIZE = 200;
 // is its own harm regardless of what comes back.
 //
 // Cost scales with the size of the range, because one request carries at most
-// one page. Measured against this module at the default page size: a month of
-// 20 rows costs one request, 200 two, 400 three, 1000 six, 2000 eleven, 5000
-// twenty-six. So this ceiling is also a limit on how large a range one export
+// one page. Measured against this module at the default page size, for a month
+// of the stated size against an account carrying ordinary history behind it: 20
+// rows costs one request, 200 two, 400 three, 1000 six, 2000 eleven, 5000
+// twenty-six. An account running at that volume continuously costs more, the
+// margin below the range being as dense as the range itself. So this ceiling is
+// also a limit on how large a range one export
 // can cover -- roughly this many pages times the page size, around 8000 rows --
 // and a range holding more than that refuses rather than paging on. That is the
 // intended trade: a personal account does not see 8000 transactions in a month,
@@ -270,9 +273,20 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // is blind. Measuring this replaced a test on page length -- which the rest
     // of this walk rejects as evidence, and which a server capping below the
     // ceiling slipped straight under, returning 170 rows of 350.
-    const whole = await requestConfirmed(MAX_PAGE_SIZE, floor);
-    collect(whole);
-    if (!completionsOf(whole).some(value => value < floor)) throw tooManyAtOneInstant();
+    // Older rows exist, so whether the group at this instant was read whole can
+    // be read off the page already in hand. The walk only stalls with the cursor
+    // at `floor + 1`, so that page IS a full read of this instant under either
+    // an inclusive or an exclusive cutoff -- and it was asked for the largest
+    // page the API will give. A server with older rows to offer would have
+    // carried on into them; a page holding nothing but this one instant means it
+    // stopped short, and the remainder would land at the oldest end of the range
+    // where the balance chain is blind.
+    //
+    // An earlier version asked a fresh question at `to = floor` instead. Under an
+    // exclusive cutoff that answer excludes the very group it was meant to
+    // measure, so the guard could never fire and 170 rows of 350 went missing in
+    // silence -- assuming the semantics this module exists in order not to assume.
+    if (allAtFloor) throw tooManyAtOneInstant();
 
     cursor = olderFloor + 1;
     count = pageSize;

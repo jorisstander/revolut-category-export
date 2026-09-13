@@ -134,10 +134,11 @@ feed is finished — it issues one more request asking whether anything older ex
 answer is yes it carries on from there. It raises only when the answer is no and the same
 rows keep coming back, because that is what says the rest of the range cannot be reached.
 
-That last request is the difference between a guess and a measurement. Several earlier
+Those requests are the difference between a guess and a measurement. Several earlier
 versions guessed, in several different ways, and each returned a well-formed file missing
-part of a month. It costs one request, and only on the path where an account's history
-runs out before the range does.
+part of a month. They are only reached when the walk stalls — an account whose history runs
+out inside the range, a server capping its pages, a cutoff read more coarsely than asked —
+and the stall path costs two to four requests more than a clean one.
 
 Two further rules follow from the same principle, that page shape is not evidence:
 
@@ -171,19 +172,25 @@ and fewer again the tighter the server caps its pages. Three things are then mea
 than assumed:
 
 - **That the wider cutoff is safe, on the occasions it is used at all.** It is reached for
-  only after the first probe comes back with nothing older, and only if every row in that
-  answer *started* before the stalled instant — which is the one thing a server keyed on start
-  dates must do. A server whose cutoff is merely rounded coarser than a millisecond returns
+  only after the first probe comes back with nothing older, and only if no row in that answer
+  *started* at or after the stalled instant — which is the one thing a server keyed on start
+  dates cannot do. (A row carrying no start date at all says nothing either way, and is not
+  counted against it.) A server whose cutoff is merely rounded coarser than a millisecond returns
   rows that started at the instant itself, and it is refused instead. Taking the first answer
   alone as proof of start-date keying let a day-granular server return 300 rows of 1000.
 - **That the group at the stalled instant was read whole**, before the cursor steps past it.
-  Older rows are known to exist by that point, so a server returning everything it holds at
-  that cutoff would have carried on into them; an answer containing nothing older means it
-  truncated the group. This replaced a test on page length, which a server capping below the
-  ceiling slipped straight under, returning 170 rows of 350.
+  The walk only ever stalls with the cursor one millisecond above that instant, so the page
+  already in hand is a full read of it under an inclusive or an exclusive cutoff alike, asked
+  at the largest size the API will give. Older rows are known to exist by that point, and a
+  server with them to offer would have carried on into them; a page holding nothing but this
+  one instant means it stopped short. This replaced a test on page length, which a server
+  capping below the ceiling slipped straight under, returning 170 rows of 350 — and then a
+  fresh request at the instant itself, which an exclusive cutoff excludes by construction, so
+  it measured nothing and lost the same 170 rows without a word.
 - **That a probe answering with nothing settled has been stepped past**, not believed. A
   capped page can be filled entirely by stale `PENDING` rows while settled history remains
-  below them; reading that as the end of the feed returned 4 rows of 132.
+  below them; reading that as the end of the feed returned 4 of the 130 settled rows in
+  range.
 
 One case stays undecidable from outside, and is therefore refused: more rows sharing a single
 timestamp than one request can return. Whether the group ends there or the server truncated it
