@@ -96,17 +96,36 @@ test('`to` ignored entirely: raises rather than truncating', async () => {
   );
 });
 
-test('`to` compared against the started date: no false failure', async () => {
-  // Completion trails start, so rows newer than the cutoff come back routinely.
-  // The previous guard rejected this outright; it must not.
+test('`to` compared against the started date: refused, never mis-paged', async () => {
+  // Completion trails start, so rows newer than the cutoff come back routinely
+  // and the completion-based cursor stops advancing.
+  //
+  // The walk used to page past this by reaching below the oldest START date on
+  // the page. That is the right question here and the wrong one for a server
+  // that merely rounds its cutoff coarser than a millisecond, where it steps
+  // over every row completing in between -- 100 rows of 540, silently. The two
+  // answer every probe identically: ordinary settlement lag makes the coarse
+  // server satisfy each test for start-date keying that has been tried. Neither
+  // model has ever been observed in this API, so the walk refuses rather than
+  // pick one and be silently wrong about a month.
+  //
+  // The cost is that such a server could not be exported from at all. That is
+  // the right way round: a refusal is visible and reportable, a short file that
+  // reconciles wrongly is not.
   const rows = ledger([30, 20, 10, 5].map((d, i) => {
     const r = row(d, `r${i}`);
     r.completedDate = r.startedDate + 36e5; // cleared an hour later
     return r;
   }));
   const get = serve(rows, (r, to) => r.startedDate <= to);
-  const out = await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 });
-  assert.equal(out.length, 4);
+  await assert.rejects(
+    () => fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 }),
+    (err) => {
+      assert.ok(err instanceof PaginationError);
+      assert.match(err.message, /Refusing to write a partial file/);
+      return true;
+    }
+  );
 });
 
 test('`to` rounded coarser than a millisecond: refuses rather than guesses', async () => {

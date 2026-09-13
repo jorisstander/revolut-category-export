@@ -13,8 +13,8 @@ const DEFAULT_PAGE_SIZE = 200;
 // rows costs one request, 200 two, 400 three, 1000 six, 2000 eleven, 5000
 // twenty-six. An account running at that volume continuously costs more, the
 // margin below the range being as dense as the range itself. So this ceiling is
-// also a limit on how large a range one export
-// can cover -- roughly this many pages times the page size, around 8000 rows --
+// also a limit on how large a range one export can cover -- roughly this many
+// pages times the page size, around 8000 rows --
 // and a range holding more than that refuses rather than paging on. That is the
 // intended trade: a personal account does not see 8000 transactions in a month,
 // and a visible refusal beats an unbounded run of requests against a bank.
@@ -238,32 +238,20 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       if (olderFloor === null) throw unreachable(); // still cannot see past them
     }
 
-    if (olderFloor >= floor) {
-      // Nothing older by completion. Either the feed ends here, or `to` is not
-      // being compared against the completion date at all.
-      //
-      // A server keyed on START dates can only have returned rows that started
-      // at or before this cutoff. If any row here started at or after the
-      // stalled instant, that is not what happened -- the cutoff is being read
-      // more coarsely than a millisecond instead, and a wider one would step
-      // over rows rather than reach past them. An earlier version assumed the
-      // first answer ruled that out; it does not, and a day-granular server
-      // returned 300 rows of 1000 with no error.
-      const keyedOnStart = older.every(row =>
-        typeof row.startedDate !== 'number' || row.startedDate < floor);
-      const earliest = Math.min(...rows
-        .filter(row => typeof row.completedDate === 'number')
-        .flatMap(row => [row.startedDate, row.completedDate])
-        .filter(value => typeof value === 'number'));
-
-      if (!keyedOnStart || !Number.isFinite(earliest) || earliest >= floor) throw unreachable();
-
-      older = await requestConfirmed(pageSize, earliest - 1);
-      if (older.length === 0) break;
-      collect(older);
-      olderFloor = oldestCompletion(older);
-      if (olderFloor === null || olderFloor >= floor) throw unreachable();
-    }
+    // Rows came back, but none of them older by completion. Either the feed ends
+    // here, or `to` is not being compared against the completion date at all --
+    // a server keyed on START dates, or one rounding the cutoff coarser than a
+    // millisecond, both answer exactly this way.
+    //
+    // Earlier versions tried to page past it by reaching below the oldest START
+    // date on the page. That is the right question for a start-date-keyed server
+    // and the wrong one for a coarse-rounded server, where it steps over every
+    // row completing in between: three weeks of a month went unread and 100 rows
+    // of 540 came back with no error. The two cannot be told apart -- ordinary
+    // settlement lag makes a coarse server satisfy every test for start-date
+    // keying that has been tried here -- and neither has ever been observed in
+    // this API. So the walk refuses rather than pick one and be silently wrong.
+    if (olderFloor >= floor) throw unreachable();
 
     // Older rows exist, so the group at this instant can be shown to have been
     // read whole before the cursor steps past it. A server returning everything
@@ -273,20 +261,23 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // is blind. Measuring this replaced a test on page length -- which the rest
     // of this walk rejects as evidence, and which a server capping below the
     // ceiling slipped straight under, returning 170 rows of 350.
-    // Older rows exist, so whether the group at this instant was read whole can
-    // be read off the page already in hand. The walk only stalls with the cursor
-    // at `floor + 1`, so that page IS a full read of this instant under either
-    // an inclusive or an exclusive cutoff -- and it was asked for the largest
-    // page the API will give. A server with older rows to offer would have
-    // carried on into them; a page holding nothing but this one instant means it
-    // stopped short, and the remainder would land at the oldest end of the range
-    // where the balance chain is blind.
+    // Older rows are now known to exist, so the group at this instant can be
+    // shown to have been read whole before the cursor steps past it. Ask for the
+    // largest page the API will give at `floor + 1`: that cutoff takes in the
+    // instant under an inclusive `to` and an exclusive one alike. A server with
+    // older rows to offer would have carried on into them; an answer holding
+    // nothing older than this instant means it stopped short, and the remainder
+    // would land at the oldest end of the range where the chain cannot see it.
     //
-    // An earlier version asked a fresh question at `to = floor` instead. Under an
-    // exclusive cutoff that answer excludes the very group it was meant to
-    // measure, so the guard could never fire and 170 rows of 350 went missing in
-    // silence -- assuming the semantics this module exists in order not to assume.
-    if (allAtFloor) throw tooManyAtOneInstant();
+    // The cutoff is the whole point. At `floor` an exclusive `to` excludes the
+    // very group being measured, so the guard could never fire: 170 rows of 350,
+    // silently. Reading the answer off the page already in hand instead is no
+    // better -- that page spans more than one instant whenever the cutoff is
+    // rounded coarsely, and then nothing checks the group at all: 100 rows of
+    // 540. Neither shortcut survives not knowing the semantics.
+    const whole = await requestConfirmed(MAX_PAGE_SIZE, floor + 1);
+    collect(whole);
+    if (!completionsOf(whole).some(value => value < floor)) throw tooManyAtOneInstant();
 
     cursor = olderFloor + 1;
     count = pageSize;

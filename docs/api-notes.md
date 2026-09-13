@@ -171,13 +171,16 @@ fixture in `tests/paginate-truncation.test.js` that returned 700 rows of 1100 wi
 and fewer again the tighter the server caps its pages. Three things are then measured rather
 than assumed:
 
-- **That the wider cutoff is safe, on the occasions it is used at all.** It is reached for
-  only after the first probe comes back with nothing older, and only if no row in that answer
-  *started* at or after the stalled instant — which is the one thing a server keyed on start
-  dates cannot do. (A row carrying no start date at all says nothing either way, and is not
-  counted against it.) A server whose cutoff is merely rounded coarser than a millisecond returns
-  rows that started at the instant itself, and it is refused instead. Taking the first answer
-  alone as proof of start-date keying let a day-granular server return 300 rows of 1000.
+- **That there is no second guess when the first probe finds nothing older.** Two server
+  models answer that way: one keyed on *start* dates, and one merely rounding the cutoff
+  coarser than a millisecond. The walk used to page past it by reaching below the oldest start
+  date on the page — the right question for the first model and the wrong one for the second,
+  where it steps over every row completing in between: three weeks of a month unread, 100 rows
+  of 540, no error. The two cannot be told apart. Ordinary settlement lag makes the coarse
+  server satisfy every test for start-date keying tried here, and neither model has ever been
+  observed in this API. So the walk refuses instead of picking one. The cost is that a
+  start-date-keyed server could not be exported from at all once the cursor stalls; that is
+  the right way round, because a refusal is visible and a short file is not.
 - **That the group at the stalled instant was read whole**, before the cursor steps past it.
   The walk only ever stalls with the cursor one millisecond above that instant, so the page
   already in hand is a full read of it under an inclusive or an exclusive cutoff alike, asked
@@ -279,7 +282,8 @@ cannot see it. And the request budget is 40 pages: these calls go to someone's b
 server behaving oddly should not be able to drive hundreds of them.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
-exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers.
+exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers —
+"every row" for the ones that can be paged soundly, "or raise" for the ones that cannot.
 `tests/paginate-truncation.test.js` covers the silent-loss cases specifically, including
 server page caps with and without a tie group.
 

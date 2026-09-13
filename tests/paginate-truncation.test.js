@@ -351,3 +351,36 @@ test('a coarse cutoff is not mistaken for a server keyed on start dates', async 
 
   await assertEveryRowOrRaise(get, all);
 });
+
+test('a coarse cutoff whose page spans instants still has its group checked', async () => {
+  // Every row here started a day or more before it settled, which is ordinary
+  // card settlement -- and which satisfies the "started before this instant"
+  // evidence that lets the walk widen its cutoff. A day-granular server then
+  // hands back a page spanning several instants, so reading the answer off that
+  // page instead of asking for the group again checks nothing at all: 100 rows
+  // of 540, silently. The group is re-read at `floor + 1`, a cutoff that takes
+  // the instant in whether `to` is inclusive or exclusive.
+  const CAP = 100;
+  const endOfDay = (t) => { const d = new Date(t); d.setUTCHours(23, 59, 59, 999); return d.getTime(); };
+  const day = Date.UTC(2026, 7, 20);
+  const settled = day + 3 * 36e5;
+  const LAG = 21 * 864e5;
+
+  const batch = Array.from({ length: 200 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 20, `batch${i}`), amount: -(5 + i % 20),
+    startedDate: settled - LAG - i * 1000, completedDate: settled
+  }));
+  const sameDay = Array.from({ length: 40 }, (_, i) => {
+    const t = day + (6 + i % 17) * 36e5 + i * 1000;
+    return { ...txnIn(JOINT_POCKET, 20, `same${i}`), amount: -9, startedDate: t - LAG, completedDate: t };
+  });
+  const below = Array.from({ length: 300 }, (_, i) => {
+    const t = Date.UTC(2026, 7, 2) + Math.floor(i * 36e5 * 1.4);
+    return { ...txnIn(JOINT_POCKET, 2, `below${i}`), amount: -13, startedDate: t - LAG, completedDate: t };
+  });
+  const all = desc([...batch, ...sameDay, ...below]);
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= endOfDay(params.to)).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
