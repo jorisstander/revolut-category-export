@@ -181,18 +181,10 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // batch a few days below `from` used to turn a clean export into an error.
     if (floor < from) break;
 
-    // The page came back full at the ceiling with the cursor still pinned, so
-    // there may be more rows at this instant than any single request can return.
-    // Stepping past them would drop the remainder at the oldest end of the
-    // range, which is exactly where the balance chain cannot see a loss -- so
-    // this refuses instead. A refusal is visible; a short file is not.
-    if (rows.length >= MAX_PAGE_SIZE) {
-      throw new PaginationError(
-        `More than ${MAX_PAGE_SIZE} transactions share the timestamp ` +
-        `${new Date(floor).toISOString()}, which is more than one page can return, so the rest of ` +
-        `them cannot be reached. Refusing to write a partial file.`
-      );
-    }
+    const unreachable = () => new PaginationError(
+      `Paging cannot get past ${new Date(floor).toISOString()}: asking for older transactions ` +
+      `returns the same ones, so the rest of the range is unreachable. Refusing to write a partial file.`
+    );
 
     // Widening did not help. Ask the server directly for something older rather
     // than inferring an answer from the page: page length cannot distinguish an
@@ -204,43 +196,83 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // completion-keyed server it steps clean over every row that completed
     // between that start date and this instant. The walk then resumes below
     // `from` and stops, and the loss lands at the oldest end of the range, where
-    // the balance chain cannot see it: 250 rows of 1100, silently.
+    // the balance chain cannot see it -- 700 rows of 1100 against the fixture in
+    // tests/paginate-truncation.test.js, and fewer the tighter the server caps.
+    const tooManyAtOneInstant = () => new PaginationError(
+      `More transactions share the timestamp ${new Date(floor).toISOString()} than one request ` +
+      `can return, so the rest of them cannot be reached. Refusing to write a partial file.`
+    );
+
+    // Whether this page is nothing but the stalled instant. If it is, the page
+    // is exactly the part of that group the server chose to hand over, and there
+    // is no row below it on the page to show the group ended.
+    const allAtFloor = completionsOf(rows).every(value => value === floor);
+
     let older = await requestConfirmed(pageSize, floor - 1);
-    if (older.length === 0) break;
+
+    if (older.length === 0) {
+      // Nothing older exists, so this group ends the feed. It is whole only if
+      // the server had room to hand over all of it: a page filled to the ceiling
+      // by a single instant may have been cut, and the remainder would sit at
+      // the oldest end of the range where the balance chain is blind.
+      if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
+      break;
+    }
     collect(older);
     let olderFloor = oldestCompletion(older);
 
-    // Rows came back, but none of them older by completion. Either the feed ends
-    // here, or the server is not comparing `to` against the completion date at
-    // all. That second case is now established rather than assumed, and it is
-    // what makes the wider cutoff safe to use: a completion-keyed server could
-    // not have answered this way, so widening cannot step over its rows.
-    if (olderFloor !== null && olderFloor >= floor) {
+    // A probe page holding no completions at all proves nothing. A capped page
+    // can be filled entirely by stale PENDING rows while settled history remains
+    // below them -- reading that as "the feed has run out" returned 4 rows of
+    // 132. Step below those rows and ask again rather than concluding from them.
+    if (olderFloor === null) {
+      const instants = older.map(instantOf).filter(value => typeof value === 'number');
+      if (instants.length === 0) throw unreachable();
+      older = await requestConfirmed(pageSize, Math.min(...instants) - 1);
+      if (older.length === 0) break; // genuinely the end: only unsettled rows remained
+      collect(older);
+      olderFloor = oldestCompletion(older);
+      if (olderFloor === null) throw unreachable(); // still cannot see past them
+    }
+
+    if (olderFloor >= floor) {
+      // Nothing older by completion. Either the feed ends here, or `to` is not
+      // being compared against the completion date at all.
+      //
+      // A server keyed on START dates can only have returned rows that started
+      // at or before this cutoff. If any row here started at or after the
+      // stalled instant, that is not what happened -- the cutoff is being read
+      // more coarsely than a millisecond instead, and a wider one would step
+      // over rows rather than reach past them. An earlier version assumed the
+      // first answer ruled that out; it does not, and a day-granular server
+      // returned 300 rows of 1000 with no error.
+      const keyedOnStart = older.every(row =>
+        typeof row.startedDate !== 'number' || row.startedDate < floor);
       const earliest = Math.min(...rows
         .filter(row => typeof row.completedDate === 'number')
         .flatMap(row => [row.startedDate, row.completedDate])
         .filter(value => typeof value === 'number'));
-      if (Number.isFinite(earliest) && earliest < floor) {
-        older = await requestConfirmed(pageSize, earliest - 1);
-        if (older.length === 0) break;
-        collect(older);
-        olderFloor = oldestCompletion(older);
-      }
+
+      if (!keyedOnStart || !Number.isFinite(earliest) || earliest >= floor) throw unreachable();
+
+      older = await requestConfirmed(pageSize, earliest - 1);
+      if (older.length === 0) break;
+      collect(older);
+      olderFloor = oldestCompletion(older);
+      if (olderFloor === null || olderFloor >= floor) throw unreachable();
     }
 
-    // The probe asked for settled transactions older than this page and the
-    // server returned none. Anything unsettled it did return has been collected
-    // above; there is no more settled history to page into. Raising here would
-    // make an account un-exportable because of a stale pre-authorisation sitting
-    // at the bottom of its feed.
-    if (olderFloor === null) break;
-
-    if (olderFloor >= floor) {
-      throw new PaginationError(
-        `Paging cannot get past ${new Date(floor).toISOString()}: asking for older transactions ` +
-        `returns the same ones, so the rest of the range is unreachable. Refusing to write a partial file.`
-      );
-    }
+    // Older rows exist, so the group at this instant can be shown to have been
+    // read whole before the cursor steps past it. A server returning everything
+    // it holds at this cutoff would have carried on into those older rows; if a
+    // full read here comes back with nothing older, it truncated the group, and
+    // the remainder sits at the oldest end of the range where the balance chain
+    // is blind. Measuring this replaced a test on page length -- which the rest
+    // of this walk rejects as evidence, and which a server capping below the
+    // ceiling slipped straight under, returning 170 rows of 350.
+    const whole = await requestConfirmed(MAX_PAGE_SIZE, floor);
+    collect(whole);
+    if (!completionsOf(whole).some(value => value < floor)) throw tooManyAtOneInstant();
 
     cursor = olderFloor + 1;
     count = pageSize;

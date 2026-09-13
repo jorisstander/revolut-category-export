@@ -195,10 +195,15 @@ export function assertContinuous(rows) {
       if (expected !== null && !expected.includes(analysis.enter)) throw missingBetween(group, analysis.enter);
       expected = [analysis.leave];
     } else {
-      // No net effect: the group leaves the balance where it found it.
+      // No net effect: the group leaves the balance where it found it. Every
+      // candidate still standing is carried forward whole. Narrowing to the
+      // first of them looks harmless -- the group entered and left at the same
+      // balance, so any one of them would do -- but it discards the true one
+      // whenever more than one survives, and the next group is then measured
+      // against a guess. That refused complete exports.
       const agreed = expected === null ? null : expected.filter(value => analysis.balances.includes(value));
       if (agreed !== null && agreed.length === 0) throw missingBetween(group, analysis.balances[0]);
-      expected = agreed === null ? analysis.balances : [agreed[0]];
+      expected = agreed === null ? analysis.balances : agreed;
     }
     previous = group;
   }

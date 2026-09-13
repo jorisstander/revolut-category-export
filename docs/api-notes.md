@@ -120,16 +120,19 @@ statement for the same period.
 `to=<epochMs>` pages backwards, but nothing establishes whether it is inclusive or
 exclusive, which field it compares against, or its granularity. The spike never sends it.
 
-Neither is `count`. It is documented above as a hint — the API has returned more rows than
-asked for — so the number of rows on a page says nothing about what the server holds. A
-server-side cap and an exhausted feed look identical by page length.
+Neither is `count`. It is a hint and not a limit: the endpoint has been observed returning
+**more rows than were asked for**, so the number of rows on a page says nothing about what
+the server holds. A server-side cap and an exhausted feed look identical by page length.
+That single observation is why page length is inadmissible as evidence everywhere in the
+walk — including for an empty page, which is only page length again.
 
 `src/core/paginate.js` therefore assumes neither. It steps the cursor one millisecond past
 the oldest row, so a group sharing a timestamp is re-fetched whether `to` is inclusive or
 exclusive. It widens the page rather than stepping over an unread remainder. And when the
 walk stalls above the start of the range, it does not infer from page length whether the
-feed is finished — it issues one more request asking whether anything older exists, and
-raises if the answer is yes.
+feed is finished — it issues one more request asking whether anything older exists. If the
+answer is yes it carries on from there. It raises only when the answer is no and the same
+rows keep coming back, because that is what says the rest of the range cannot be reached.
 
 That last request is the difference between a guess and a measurement. Several earlier
 versions guessed, in several different ways, and each returned a well-formed file missing
@@ -158,18 +161,50 @@ to 400 rows a month, one request at 1000, three at 3000. Rows outside the range 
 discarded either way. A stall *inside* that margin ends the walk rather than raising: it is
 activity outside the month being exported, and it should not be able to abort it.
 
-When the walk stalls, the question it asks the server is shaped by the answer to the last
+When the walk stalls, each question it asks the server is shaped by the answer to the last
 one. The first probe reaches one millisecond below the oldest *completion* on the page.
 Reaching below the oldest *start* date instead looks safer — it excludes those rows whichever
 field the server compares — but against a completion-keyed server it steps over every row
-that completed in between, and the walk then resumes below the range and stops: 250 rows of
-1100, silently. Only if that first probe comes back with nothing older does the wider cutoff
-get used, and by then a completion-keyed server has ruled itself out, because it could not
-have answered that way.
+that completed in between, and the walk then resumes below the range and stops. Against the
+fixture in `tests/paginate-truncation.test.js` that returned 700 rows of 1100 with no error,
+and fewer again the tighter the server caps its pages. Three things are then measured rather
+than assumed:
+
+- **That the wider cutoff is safe, on the occasions it is used at all.** It is reached for
+  only after the first probe comes back with nothing older, and only if every row in that
+  answer *started* before the stalled instant — which is the one thing a server keyed on start
+  dates must do. A server whose cutoff is merely rounded coarser than a millisecond returns
+  rows that started at the instant itself, and it is refused instead. Taking the first answer
+  alone as proof of start-date keying let a day-granular server return 300 rows of 1000.
+- **That the group at the stalled instant was read whole**, before the cursor steps past it.
+  Older rows are known to exist by that point, so a server returning everything it holds at
+  that cutoff would have carried on into them; an answer containing nothing older means it
+  truncated the group. This replaced a test on page length, which a server capping below the
+  ceiling slipped straight under, returning 170 rows of 350.
+- **That a probe answering with nothing settled has been stepped past**, not believed. A
+  capped page can be filled entirely by stale `PENDING` rows while settled history remains
+  below them; reading that as the end of the feed returned 4 rows of 132.
+
+One case stays undecidable from outside, and is therefore refused: more rows sharing a single
+timestamp than one request can return. Whether the group ends there or the server truncated it
+cannot be told apart, and the remainder would land at the oldest end of the range where the
+balance chain is blind.
+
+A narrower version of it cannot even be refused, and is recorded here rather than papered
+over. Detecting a truncated group depends on older rows existing to carry on into. If a tie
+group sits at the very oldest instant of the *entire feed* and the server caps its pages below
+the size of that group, then a capping server and a feed that simply ends there answer every
+question identically — asking for more returns the same rows, and asking for older returns
+nothing, whichever is true. Any account with history behind the month being exported is
+outside this case; a brand-new account whose first transactions all share one timestamp is
+not.
 
 Cost scales with the size of the range, because one request carries at most one page.
-Measured against the module at the default page size: a month of 20 rows is one request, 200
-is two, 400 is three, 1000 is six, 2000 is eleven, 5000 is twenty-six. An account whose
+Measured against the module at the default page size, for a month of the stated size against
+an account carrying ordinary history behind it: 20 rows is one request, 200 is two, 400 is
+three, 1000 is six, 2000 is eleven, 5000 is twenty-six. An account running at that volume
+*continuously* costs somewhat more, because the margin below the range is then as dense as
+the range itself. An account whose
 history runs out inside the range costs two to four more, because that is the path that asks
 the extra question rather than assuming the answer. The 40-page budget is therefore also a
 ceiling on how large a range one export can cover — around 8000 rows — and a range holding

@@ -253,3 +253,74 @@ test('a large batch below the range does not abort the month above it', async ()
   const out = await fetchRange({ get, handle, from: FROM, to: TO });
   assert.equal(out.length, inRange.length, `expected the month, got ${out.length} of ${inRange.length}`);
 });
+
+/**
+ * The three cases below all stall the walk against a server that caps its pages.
+ * A cap is the one server behaviour that cannot be seen from outside, so each of
+ * these used to end in a short file that looked complete.
+ */
+
+test('a capped server cannot step past a tie group it truncated', async () => {
+  // The tie sits at the OLDEST in-range instant, so anything dropped from it
+  // lands where the balance chain is blind. The refusal used to be guarded by a
+  // page-length test, which a server capping below the ceiling slipped under.
+  const CAP = 120;
+  const tie = Array.from({ length: 300 }, (_, i) => row(2, `tie${i}`));
+  const above = Array.from({ length: 50 }, (_, i) => row(10 + (i % 20), `up${i}`, i));
+  const all = desc([...tie, ...above]);
+  // History below the month, as any account past its first has. Without it the
+  // truncation cannot be detected at all: a server capping at 120 and a feed
+  // holding exactly 120 rows answer every question identically. That limit is
+  // recorded in docs/api-notes.md.
+  const older = Array.from({ length: 200 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -20,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const served = desc([...all, ...older]);
+  const get = async (_p, params) =>
+    served.filter(r => r.completedDate <= params.to).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a probe page filled by stale PENDING rows is not read as the end of the feed', async () => {
+  // Unsettled rows carry no completion date, so a capped probe page made of
+  // nothing but them says nothing about what lies below. Believing it returned
+  // 4 rows of 132.
+  const CAP = 2;
+  const tieAt = Date.UTC(2026, 7, 15, 5);
+  const tie = Array.from({ length: 30 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 15, `tie${i}`), amount: -10, startedDate: tieAt, completedDate: tieAt
+  }));
+  const below = Array.from({ length: 100 }, (_, i) => row(3 + (i % 10), `below${i}`, i));
+  const all = desc([...tie, ...below]);
+  const pending = Array.from({ length: 2 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 15, `pend${i}`), state: 'PENDING',
+    startedDate: tieAt - 36e5 * (i + 1), completedDate: null, balance: null
+  }));
+  const served = [...all, ...pending].sort((a, b) =>
+    (b.completedDate ?? b.startedDate) - (a.completedDate ?? a.startedDate));
+  const get = async (_p, params) => served
+    .filter(r => (r.completedDate ?? r.startedDate) <= params.to)
+    .slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a coarse cutoff is not mistaken for a server keyed on start dates', async () => {
+  // Both answer a probe with "nothing older". Only one of them can be widened
+  // past safely, and assuming the wrong one returned 300 rows of 1000.
+  const CAP = 300;
+  const endOfDay = (t) => { const d = new Date(t); d.setUTCHours(23, 59, 59, 999); return d.getTime(); };
+  const tieAt = Date.UTC(2026, 7, 12, 5);
+  const tie = Array.from({ length: 500 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 12, `tie${i}`), amount: -(10 + i % 20), startedDate: tieAt, completedDate: tieAt
+  }));
+  tie[0].startedDate = tieAt - 70 * 864e5; // began long before it settled
+  const below = Array.from({ length: 500 }, (_, i) => row(2 + (i % 9), `below${i}`, i));
+  const all = desc([...tie, ...below]);
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= endOfDay(params.to)).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});

@@ -188,3 +188,18 @@ test('a fee accounted for separately keeps its latitude inside a group', () => {
   ];
   assert.doesNotThrow(() => assertContinuous(rows));
 });
+
+test('two cancelling pairs on consecutive instants do not accuse each other', () => {
+  // A group that cancels leaves the balance where it found it, so every balance
+  // still standing remains possible. Narrowing that set to its first member
+  // looked harmless -- any of them would do -- but it discards the true one when
+  // more than one survives, and the next group is then measured against a guess.
+  const rows = [
+    { id: 't4', amount: 200, balance: 99950, completedDate: 1_020_000 },
+    { id: 't3', amount: -200, balance: 99750, completedDate: 1_020_000 },
+    { id: 't2', amount: 200, balance: 99950, completedDate: 1_010_000 },
+    { id: 't1', amount: -200, balance: 99750, completedDate: 1_010_000 },
+    { id: 't0', amount: -50, balance: 99950, completedDate: 1_000_000 }
+  ];
+  assert.doesNotThrow(() => assertContinuous(rows));
+});
