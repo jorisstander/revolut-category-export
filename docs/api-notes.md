@@ -188,7 +188,10 @@ reason no amount of tuning reaches. **An honest completion-ordered page whose so
 bucketed, and a start-ordered capture-run page, are the same local evidence.** Nothing in the
 shape of the response separates them.
 
-So it asks, in one request, on the only path where the answer changes anything. Take the
+So it asks, on the only path where the answer changes anything — one request, or two when the
+answer comes back empty, which is the ordinary case on a completion-keyed feed. That budget is
+its own: charged against the walk's forty pages it turned a complete 3900-row month into a
+refusal, and blamed the page limit for it. Take the
 deepest hold already in hand and put the cutoff just above its *start* date. A start-keyed
 server compares that field and hands the row straight back; a completion-keyed one cannot
 return it at all, because its completion lies a whole margin above the cutoff. The answer is

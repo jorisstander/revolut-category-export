@@ -62,6 +62,11 @@ const SETTLEMENT_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 // and put the export budget out of reach at 5600.
 const CUTOFF_ROUNDING_MS = 2 * 24 * 60 * 60 * 1000;
 
+// Budget for the ordering probe, on top of the page budget. Two, because an
+// empty answer is asked again before it is believed, and an empty answer is the
+// ordinary case: a completion-keyed server has nothing to return down there.
+const PROBE_ALLOWANCE = 2;
+
 export class PaginationError extends Error {
   constructor(message) {
     super(message);
@@ -115,9 +120,11 @@ const keyOf = (row) => {
  * them must not be able to refuse somebody's month.
  *
  * A collision here makes the bookkeeping below WEAKER, not safer: two rows
- * collapse into one entry, so `shown` under-counts and the three things that
- * read it -- the capping check, the coarse-cutoff detector and the ordering
- * probe -- have less to contradict the server with. It
+ * collapse into one entry, so `shown` under-counts and its two readers -- the
+ * capping check and the coarse-cutoff detector -- have less to contradict the
+ * server with. (The ordering probe also matches on labels, but against `mine`,
+ * whose rows always carry ids; a collision there would push toward a false
+ * refusal rather than away from one, which is why it reads the narrower set.) It
  * costs sensitivity, never correctness — which is the right way round, but not
  * the "more conservative" this comment claimed for several revisions.
  */
@@ -229,8 +236,14 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     }
   };
 
-  const request = async (size, cutoff) => {
-    if (requests >= maxPages) {
+  // `allowance` is extra budget for a question the walk asks ABOUT itself rather
+  // than a page it is paging through. Charged to the same 40, the ordering probe
+  // turned a complete export into a refusal on a busy account: 3900 rows in the
+  // month finished in 39 requests without a held authorisation and hit the
+  // ceiling with one -- and said "Exceeded 40 pages without reaching the start of
+  // the range", which was not what had happened.
+  const request = async (size, cutoff, allowance = 0) => {
+    if (requests >= maxPages + allowance) {
       throw new PaginationError(
         `Exceeded ${maxPages} pages without reaching the start of the range. Refusing to write a partial file.`
       );
@@ -259,9 +272,9 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   // The second ask is deliberately not byte-identical: an empty answer produced
   // by throttling or a cache is the least likely to differ when the question is
   // repeated exactly, and one extra row costs nothing.
-  const requestConfirmed = async (size, cutoff) => {
-    const page = await request(size, cutoff);
-    return page.length > 0 ? page : request(size + 1, cutoff);
+  const requestConfirmed = async (size, cutoff, allowance = 0) => {
+    const page = await request(size, cutoff, allowance);
+    return page.length > 0 ? page : request(size + 1, cutoff, allowance);
   };
 
   /**
@@ -438,12 +451,21 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       // capture run are THE SAME LOCAL EVIDENCE. No combination of those signals
       // separates them, so none of them belongs here.
       //
-      // The server can be asked instead, and answers in one request. Put the
+      // The server can be asked instead, and answers in a request -- two when it
+      // answers empty, which is the ordinary case on a completion-keyed feed and
+      // is why the probe carries its own budget. Put the
       // cutoff just above the deepest hold's START date. A start-keyed server
       // compares that field and hands the row straight back; a completion-keyed
       // one cannot return it at all, because its completion lies a whole margin
       // above the cutoff. That is a measurement, and it is the same move
       // `cutoffWasMoved` makes for the same reason.
+      //
+      // Unlike `cutoffWasMoved`, this believes a truncated answer without asking
+      // how far down it reached, and that is sound rather than an oversight: the
+      // cursor never drops below `from - SETTLEMENT_GRACE_MS`, so any page that
+      // read the held row covered a window wider than this probe's two days. A
+      // cap tight enough to truncate the answer would have hidden the row from
+      // the walk first, and then there is no held row to ask about.
       //
       // Through `requestConfirmed`, because a spurious empty answer here reads
       // as "completion-keyed" and loses the row. A margin above the start rather
@@ -453,7 +475,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       let startKeyed = false;
       if (heldPastTheMargin.length > 0) {
         const deepest = Math.min(...heldPastTheMargin.map(row => row.startedDate));
-        const answer = await requestConfirmed(MAX_PAGE_SIZE, deepest + CUTOFF_ROUNDING_MS);
+        const answer = await requestConfirmed(MAX_PAGE_SIZE, deepest + CUTOFF_ROUNDING_MS, PROBE_ALLOWANCE);
         const back = new Set(answer.map(labelOf));
         startKeyed = heldPastTheMargin.some(row => back.has(labelOf(row)));
       }

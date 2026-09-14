@@ -1118,3 +1118,38 @@ test('a capture run settling on one instant still refuses rather than dropping i
   assert.equal(lost.length, 0,
     `lost ${lost.length} of ${expected.length} rows without raising (${lost.map(r => r.id).join(', ')})`);
 });
+
+test('asking the ordering question does not spend the budget a busy month needs', async () => {
+  // The probe is a question the walk asks about itself, not a page it is paging
+  // through, so it carries its own allowance. Charged against the same forty
+  // pages it turned a complete export into a refusal: this month finishes in 39
+  // requests without a held authorisation, and hit the ceiling with one -- while
+  // reporting "Exceeded 40 pages without reaching the start of the range", which
+  // was not what had happened.
+  const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
+  const MONTH_TO = Date.UTC(2026, 7, 31, 22);
+  const SPAN = MONTH_TO - MONTH_FROM;
+  const N = 3900;
+  const mk = (id, started, completed, amount) => ({
+    ...txnIn(JOINT_POCKET, 15, id), amount, fee: 0, startedDate: started, completedDate: completed
+  });
+
+  const inRange = Array.from({ length: N }, (_, i) => {
+    const t = MONTH_TO - 1 - Math.floor(i * SPAN / N);
+    return mk(`in${i}`, t, t, -(10 + (i % 40)));
+  });
+  const hotel = mk('hotel', MONTH_FROM - 45 * 864e5, MONTH_FROM + 36e5, -250);
+  const history = Array.from({ length: N }, (_, i) => {
+    const t = MONTH_FROM - 1 - Math.floor(i * SPAN / N);
+    return mk(`old${i}`, t, t, -5);
+  });
+  const all = desc([...inRange, hotel, ...history]);
+  const expected = all.filter(r => r.completedDate >= MONTH_FROM && r.completedDate < MONTH_TO);
+
+  // Honest: completion-keyed, exact cutoff, caps nothing.
+  const get = async (_p, params) => all.filter(r => r.completedDate <= params.to).slice(0, params.count);
+
+  const out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
+  assert.equal(out.length, expected.length,
+    `a complete month was refused or shortened: got ${out.length} of ${expected.length}`);
+});
