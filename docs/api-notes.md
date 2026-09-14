@@ -206,12 +206,22 @@ balance chain is blind.
 
 A narrower version of it cannot even be refused, and is recorded here rather than papered
 over. Detecting a truncated group depends on older rows existing to carry on into. If a tie
-group sits at the very oldest instant of the *entire feed* and the server caps its pages below
-the size of that group, then a capping server and a feed that simply ends there answer every
-question identically — asking for more returns the same rows, and asking for older returns
-nothing, whichever is true. Any account with history behind the month being exported is
-outside this case; a brand-new account whose first transactions all share one timestamp is
-not.
+group sits at the very oldest instant of the *entire feed*, there are none, and the only test
+left is whether the group filled the largest page the API would hand over. That catches a
+group bigger than the ceiling. It does not catch a server capping *below* the ceiling: such a
+server and a feed that simply ends there answer every question identically — asking for more
+returns the same rows, and asking for older returns nothing, whichever is true. Measured, a
+300-row batch behind a 120-row cap exports 170 of 350 rows in silence under both an inclusive
+and an exclusive cutoff.
+
+It is left that way deliberately. Every candidate fix tried refuses the other side of the same
+ambiguity: a month whose transactions all share one timestamp, and which really is complete,
+is indistinguishable from the truncated case and would be refused too. Small complete months
+are ordinary and this API has never been seen capping a page, so erring towards the export is
+the lesser harm here — and it is the one place in this walk where that is true. **One
+transaction anywhere below the group closes it**: any account with history behind the month
+being exported is outside this case entirely, which leaves a brand-new account whose first
+transactions all share a timestamp, on a capping server.
 
 Cost scales with the size of the range, because one request carries at most one page.
 Measured against the module at the default page size, for a month of the stated size against

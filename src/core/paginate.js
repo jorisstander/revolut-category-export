@@ -232,7 +232,17 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       const instants = older.map(instantOf).filter(value => typeof value === 'number');
       if (instants.length === 0) throw unreachable();
       older = await requestConfirmed(pageSize, Math.min(...instants) - 1);
-      if (older.length === 0) break; // genuinely the end: only unsettled rows remained
+      if (older.length === 0) {
+        // The end of the feed, reached through unsettled rows -- and the same
+        // question still has to be asked as on any other end-of-feed exit: was
+        // the group at this instant handed over whole? Leaving it out here let a
+        // few stale pre-authorisations at the bottom of a feed carry the walk
+        // straight past a truncated batch, on a server that was not even capping:
+        // 2022 rows of 2420. Removing the pre-authorisations from the same feed
+        // made it refuse, which is what gave the omission away.
+        if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
+        break;
+      }
       collect(older);
       olderFloor = oldestCompletion(older);
       if (olderFloor === null) throw unreachable(); // still cannot see past them

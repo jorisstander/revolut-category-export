@@ -290,7 +290,7 @@ test('an exclusive cutoff does not hide a truncated tie group', async () => {
   // at the stalled instant -- which an exclusive cutoff excludes by construction,
   // so it measured nothing and 170 rows of 350 went missing without a word.
   const CAP = 120;
-  const tieAt = Date.UTC(2026, 7, 1, 1); // the oldest in-range instant: chain-blind
+  const tieAt = FROM; // the oldest in-range instant, where the balance chain is blind
   const tie = Array.from({ length: 300 }, (_, i) => ({
     ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),
     startedDate: tieAt, completedDate: tieAt
@@ -381,6 +381,69 @@ test('a coarse cutoff whose page spans instants still has its group checked', as
   const all = desc([...batch, ...sameDay, ...below]);
   const get = async (_p, params) =>
     all.filter(r => r.completedDate <= endOfDay(params.to)).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a page spanning instants still has its group re-read, not read off the page', async () => {
+  // Pins the difference between asking again at `floor + 1` and judging from the
+  // page already in hand. The page spans instants here -- an hour-granular cutoff
+  // rounds up and pulls in rows later in the same hour -- so "is this page all
+  // one instant?" answers no, and nothing checks the group that was truncated.
+  // 100 rows of 540 came back that way. The hour granularity matters: at a whole
+  // day, `floor - 1` stays inside the same window and the walk refuses earlier,
+  // so the coarse fixtures alone never reached this check.
+  const CAP = 120;
+  const hourEnd = (t) => { const d = new Date(t); d.setUTCMinutes(59, 59, 999); return d.getTime(); };
+
+  // The batch sits at the OLDEST in-range instant, so anything dropped from it
+  // lands where the balance chain is blind. Put it mid-range instead and the
+  // chain catches the gap, which is why the earlier fixtures passed either way.
+  const batch = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `batch${i}`), amount: -(10 + i % 30),
+    startedDate: FROM, completedDate: FROM
+  }));
+  const laterSameHour = Array.from({ length: 30 }, (_, i) => {
+    const t = FROM + (i + 1) * 60_000; // minutes past the hour, same rounding window
+    return { ...txnIn(JOINT_POCKET, 1, `later${i}`), amount: -9, startedDate: t, completedDate: t };
+  });
+  const above = Array.from({ length: 40 }, (_, i) => row(6 + (i % 20), `above${i}`, i));
+  const all = desc([...batch, ...laterSameHour, ...above]);
+  // History behind the month, so the probe finds older rows and the walk reaches
+  // the group check at all. It is outside the range, so the chain never sees it.
+  const older = Array.from({ length: 150 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -20,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const served = desc([...all, ...older]);
+  const get = async (_p, params) =>
+    served.filter(r => r.completedDate <= hourEnd(params.to)).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('stale pre-authorisations at the bottom of a feed do not waive the group check', async () => {
+  // The walk steps below a probe page made only of PENDING rows and asks again.
+  // When that answer is empty the feed really has ended -- but the group at the
+  // stalled instant still has to have been handed over whole, and that exit was
+  // the one place not asking. A few stale pre-authorisations then carried the
+  // walk straight past a batch truncated by the page ceiling, on a server that
+  // was not even capping: 2022 rows of 2420. The same feed without them refused.
+  const tieAt = FROM + 2 * 36e5;
+  const tie = Array.from({ length: 2400 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -10, startedDate: tieAt, completedDate: tieAt
+  }));
+  const above = Array.from({ length: 20 }, (_, i) => row(12 + (i % 15), `above${i}`, i));
+  const all = desc([...tie, ...above]);
+  const pending = Array.from({ length: 3 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `pend${i}`), state: 'PENDING',
+    startedDate: tieAt - 36e5 * (i + 1), completedDate: null, balance: null
+  }));
+  const served = [...all, ...pending].sort((a, b) =>
+    (b.completedDate ?? b.startedDate) - (a.completedDate ?? a.startedDate));
+  const get = async (_p, params) => served
+    .filter(r => (r.completedDate ?? r.startedDate) <= params.to)
+    .slice(0, params.count);
 
   await assertEveryRowOrRaise(get, all);
 });
