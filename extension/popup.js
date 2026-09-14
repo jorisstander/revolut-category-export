@@ -101,15 +101,32 @@ function renderFooter() {
  * the URL of every download in its history -- so every transaction, amount and
  * balance stayed there after the file was deleted, readable by anything holding
  * the `downloads` permission. A blob URL is a reference to memory in this page,
- * and is revoked as soon as the download has taken it.
+ * and carries none of that: it is a fixed-length handle whatever the file holds.
+ *
+ * It is released when the download finishes, not when it starts. `download()`
+ * resolves once the download has been CREATED, and with `saveAs` the blob is not
+ * read until the user has picked a destination -- revoking on that promise took
+ * the file away before it had been written.
  */
 async function downloadCsv(csv, filename) {
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  let id;
   try {
-    await chrome.downloads.download({ url, filename, saveAs: true });
-  } finally {
+    id = await chrome.downloads.download({ url, filename, saveAs: true });
+  } catch (error) {
     URL.revokeObjectURL(url);
+    throw error;
   }
+
+  const release = (delta) => {
+    if (delta.id !== id || !delta.state) return;
+    if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
+      chrome.downloads.onChanged.removeListener(release);
+      URL.revokeObjectURL(url);
+    }
+  };
+  chrome.downloads.onChanged.addListener(release);
+  // If the popup closes first the blob goes with it, which is the same outcome.
 }
 
 function showError(error) {

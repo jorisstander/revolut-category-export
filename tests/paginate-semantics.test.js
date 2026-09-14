@@ -133,7 +133,7 @@ test('`to` rounded coarser than a millisecond: refuses rather than guesses', asy
   // A server that widens the cutoff to a whole day keeps returning rows at the
   // oldest instant no matter how far back the cutoff is pushed. That looks
   // identical to a server ignoring `to` and replaying its newest page — which
-  // hid 39 rows of 40 in an earlier version. The two cannot be told apart from
+  // hid all but one row of the forty-row fixture in paginate-truncation.test.js. The two cannot be told apart from
   // outside, so the walk takes the safe side: it refuses.
   //
   // The cost is that such a server cannot be exported from at all. That is the

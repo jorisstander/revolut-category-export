@@ -722,3 +722,86 @@ test('a transaction with no id is refused rather than merged with another', asyn
     }
   );
 });
+
+test('a server that keeps answering above the range is refused, not asked again forever', async () => {
+  // The escape that gives up on the margin above the range set the cursor to the
+  // range end unconditionally. A server still answering above it put the walk
+  // straight back into the state it had just left: the same cutoff asked 37
+  // times out of a 40-request budget, then a refusal blaming the size of the
+  // range. These requests go to someone's bank.
+  const inRange = Array.from({ length: 200 }, (_, i) => row(2 + (i % 28), `in${i}`, i));
+  const after = Array.from({ length: 2500 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `after${i}`), amount: -3,
+    startedDate: TO + 36e5, completedDate: TO + 36e5
+  }));
+  const served = desc([...inRange, ...after]);
+  const cutoffs = [];
+  const get = async (_p, params) => {
+    cutoffs.push(params.to);
+    return served.slice(0, params.count);   // ignores `to` entirely
+  };
+
+  await assert.rejects(() => fetchRange({ get, handle, from: FROM, to: TO }), PaginationError);
+  const distinct = new Set(cutoffs).size;
+  assert.ok(cutoffs.length <= 8, `asked ${cutoffs.length} times before giving up`);
+  assert.ok(cutoffs.length - distinct <= 2, `repeated the same cutoff ${cutoffs.length - distinct} times`);
+});
+
+test('one row hidden behind a coarse cutoff is enough to refuse', async () => {
+  // Counting missing rows cannot separate "this row has left the feed" from
+  // "this row is being hidden", and a threshold of two accepted a cutoff that
+  // hid exactly one. A zero-amount authorisation is the case that matters:
+  // it moves no balance, so the chain cannot see it go.
+  const startOfHour = (t) => { const d = new Date(t); d.setUTCMinutes(0, 0, 0); return d.getTime(); };
+  const base = Date.UTC(2026, 7, 28, 12);
+  const rows = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 2, `r${i}`), amount: -(10 + (i % 20)),
+    startedDate: base - i * 36e5, completedDate: base - i * 36e5
+  }));
+  const chained = desc(rows);
+  // inside the window the rounded-down cutoff steps over, and invisible to the chain
+  const hidden = {
+    ...txnIn(JOINT_POCKET, 2, 'zero-auth'), amount: 0,
+    startedDate: chained[199].completedDate + 31 * 60000,
+    completedDate: chained[199].completedDate + 31 * 60000,
+    balance: chained[199].balance
+  };
+  const all = [...chained, hidden].sort((a, b) => b.completedDate - a.completedDate);
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= startOfHour(params.to)).slice(0, params.count);
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('an unsettled row that settles mid-walk is not an accusation either', async () => {
+  // A PENDING row is placed by its start date, and when it settles it moves to
+  // its completion date. Recording unsettled rows in the walk's bookkeeping
+  // therefore leaves an entry at an instant the server will never answer with
+  // again -- and the walk reads that as the server hiding rows from it.
+  const base = Date.UTC(2026, 7, 30, 12);
+  const rows = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 2, `r${i}`), amount: -(10 + (i % 20)),
+    startedDate: base - i * 36e5, completedDate: base - i * 36e5
+  }));
+  const older = Array.from({ length: 200 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -5,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const startedAt = base - 198 * 36e5 - 18e5;
+  const pendingForm = {
+    ...txnIn(JOINT_POCKET, 2, 'settles'), amount: -40,
+    startedDate: startedAt, completedDate: null, balance: null
+  };
+  const settledForm = { ...pendingForm, completedDate: base + 36e5, balance: null };
+  const served = desc([...rows, ...older]);
+  let seen = 0;
+  const get = async (_p, params) => {
+    seen++;
+    const feed = [...served, seen === 1 ? pendingForm : settledForm]
+      .sort((a, b) => (b.completedDate ?? b.startedDate) - (a.completedDate ?? a.startedDate));
+    return feed.filter(r => (r.completedDate ?? r.startedDate) <= params.to).slice(0, params.count);
+  };
+
+  const out = await fetchRange({ get, handle, from: FROM, to: TO });
+  for (const wanted of rows) assert.ok(out.some(r => r.id === wanted.id), `missing ${wanted.id}`);
+});

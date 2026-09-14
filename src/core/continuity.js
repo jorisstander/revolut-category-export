@@ -173,8 +173,9 @@ export function assertContinuous(rows) {
 
   const missingBetween = (group, enter) => new IncompleteExportError(
     `Transactions are missing between ${describe(previous)} and ${describe(group)}: the balance ` +
-    `after ${describe(previous)} does not lead to the one the next row recorded — they are ` +
-    `${Math.abs(expected[0] - enter)} apart in minor units. At least one transaction moved the ` +
+    `after ${describe(previous)} does not lead to the one the next row recorded — the nearest ` +
+    `it comes is ${Math.min(...expected.map(value => Math.abs(value - enter)))} apart in minor ` +
+    `units. At least one transaction moved the ` +
     `balance in between and is not in this export. Refusing to write a file that would reconcile ` +
     `wrongly.`
   );

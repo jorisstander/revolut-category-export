@@ -231,16 +231,18 @@ coarse-cutoff reason.
 Cost scales with the size of the range, because one request carries at most one page.
 Measured against the module at the default page size, for a month of the stated size against
 an account carrying ordinary history behind it: 20 rows is one request, 200 is two, 400 is
-three, 1000 is six, 2000 is eleven, 5000 is twenty-six. An account running at that volume
+three, 1000 is six, 2000 is eleven, 5000 is twenty-six. A stall can add a probe that asks for
+a full page, so a feed that keeps stalling costs roughly double; the sweep's worst completed
+export is thirteen requests. An account running at that volume
 *continuously* costs somewhat more, because the margin below the range is then as dense as
 the range itself. An account whose
 history runs out inside the range costs two to four more, because that is the path that asks
 the extra question rather than assuming the answer. The 40-page budget is therefore also a
 ceiling on how large a range one export can cover, and a range holding more than that refuses
 rather than paging on. Where the ceiling falls depends on what surrounds the range, because
-the margins either side are read at whatever density they hold: measured, about 7500 rows for
-the current month over sparse history, and about 6000 for a past month on an account running
-at the same rate throughout, where the margin above the range is populated too.
+the margins either side are read at whatever density they hold: measured, a little under 8000 rows for
+the current month over sparse history, and a little over 6000 for a past month on an account
+running at the same rate throughout, where the margin above the range is populated too.
 
 ### Completeness is verified, not assumed
 
@@ -323,10 +325,18 @@ server behaving oddly should not be able to drive hundreds of them.
 
 `scripts/sweep.mjs` asks the broader question the tests cannot: across the cutoff semantics,
 page caps, account shapes and settlement lags nobody has established for this API, does the
-walk ever return a short file without saying so? It runs 5184 simulated servers and 432 feeds
-an honest server would hand over whole, and exits non-zero if any of them comes back short in
-silence. It is where the round-down cases above were found, and where a batch spread over two
-milliseconds instead of one was found to walk straight through the guard meant to stop it.
+walk ever return a short file without saying so? It builds each server from four independent choices — the field it compares, the field it
+orders by, whether the comparison is inclusive, and how coarsely it reads the cutoff — because
+a real one is built that way too, and the shapes that hurt come from the combinations. It runs
+8100 of them plus 1080 feeds an honest server would hand over whole, and exits non-zero if any
+comes back short in silence, or if a server reading the cutoff exactly is refused. It is where
+the round-down cases above were found, where a batch spread over two milliseconds was found to
+walk straight through the guard meant to stop it, and where treating each behaviour as its own
+self-contained model was found to be the reason none of that had shown up sooner.
+
+One combination is deliberately not built: a server that filters on one field and sorts by
+another. Nobody builds that, and catching it would mean firing on evidence that accuses an
+ordinary server — the two pull in opposite directions.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
 exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers —

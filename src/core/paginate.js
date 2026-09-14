@@ -16,9 +16,9 @@ const DEFAULT_PAGE_SIZE = 200;
 // also a limit on how large a range one export can cover -- roughly this many
 // pages times the page size. Where it falls depends on what surrounds the
 // range, because the margins either side are read at whatever density they
-// hold: measured, about 7500 rows for the current month over sparse history,
-// and about 6000 for a past month on an account running at the same rate
-// throughout, where the margin above the range is populated too.
+// hold: measured, a little under 8000 rows for the current month over sparse
+// history, and a little over 6000 for a past month on an account running at the
+// same rate throughout, where the margin above the range is populated too.
 // A range holding more than that refuses rather than paging on. That is the
 // intended trade: a personal account does not see 8000 transactions in a month,
 // and a visible refusal beats an unbounded run of requests against a bank.
@@ -169,7 +169,9 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // that the server will never show again, and the walk then accuses an honest
     // server of holding rows back. A settled transaction does not move.
     const settled = page.filter(row => typeof row.completedDate === 'number');
-    for (const row of settled) shown.set(labelOf(row), row.completedDate);
+    for (const row of settled) {
+      shown.set(labelOf(row), { completed: row.completedDate, started: row.startedDate });
+    }
     // An EMPTY answer makes the same assertion, but it is the one this API is
     // documented to make falsely, so it is never recorded as a claim -- only
     // answers that came back with something, and with less than was asked for.
@@ -177,8 +179,8 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     if (capping) return;
     for (const claim of claims) {
       let below = 0;
-      for (const instant of shown.values()) {
-        if (typeof instant === 'number' && instant < claim.cutoff) below++;
+      for (const seen of shown.values()) {
+        if (seen.completed < claim.cutoff) below++;
       }
       if (below > claim.atMost) { capping = true; return; }
     }
@@ -239,11 +241,28 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // handed over at a higher cutoff must still be at or below this one. It is
     // checked before the walk reads an empty page as the end of the feed, which
     // is how a rounded-down cursor step lost the last ten rows of a batch.
-    const newest = settled.length > 0 ? Math.max(...settled) : -Infinity;
+    // The window this page covers, under EITHER ordering. A page is truncated
+    // from its oldest end, so a row above the page's minimum cannot have been
+    // dropped that way -- but which field "oldest" means depends on what the
+    // server sorted by, and that is not established either. A row above both
+    // minima is inside the covered window whichever it was.
+    //
+    // Measuring the window from the page's newest COMPLETION instead was wrong
+    // in a way that took a while to see: on a server ordering by start date, one
+    // row with ordinary settlement lag sits low by start and high by completion,
+    // lifting that mark above everything a rounded cutoff had hidden. The check
+    // then found nothing to report and 203 rows of 300 went quietly missing.
+    const starts = page.map(row => row.startedDate).filter(value => typeof value === 'number');
+    const floorCompleted = settled.length > 0 ? Math.min(...settled) : -Infinity;
+    const floorStarted = starts.length > 0 ? Math.min(...starts) : -Infinity;
+    const onPage = new Set(page.map(labelOf));
+
     const missing = [];
-    for (const [label, instant] of shown) {
-      if (typeof instant === 'number' && instant > newest && instant < cutoff) {
-        missing.push({ label, instant });
+    for (const [label, seen] of shown) {
+      if (onPage.has(label)) continue;
+      if (!(seen.completed < cutoff && typeof seen.started === 'number' && seen.started < cutoff)) continue;
+      if (seen.completed > floorCompleted && seen.started > floorStarted) {
+        missing.push({ label, instant: seen.completed });
       }
     }
     if (missing.length === 0) return false;
@@ -270,10 +289,13 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     const labels = new Set(again.map(labelOf));
     if (missing.some(row => labels.has(row.label))) return true;
 
-    // It did not come back -- but only if the answer reached down that far does
-    // that mean anything. An answer that stopped short says nothing either way,
+    // It did not come back. That settles it if the answer reached down to where
+    // the row should have been, or if it was not truncated -- a server handing
+    // over everything it holds below a cutoff has said there is nothing there.
+    // Only a truncated answer that never got that far says nothing either way,
     // and saying nothing is not permission to carry on.
-    return !again.some(row => typeof row.completedDate === 'number' && row.completedDate <= highest);
+    const reached = again.some(row => typeof row.completedDate === 'number' && row.completedDate <= highest);
+    return !reached && again.length >= MAX_PAGE_SIZE;
   };
 
   const collect = (rows) => {

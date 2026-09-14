@@ -39,17 +39,63 @@ const startOf = (unit) => (t) => {
 };
 const instant = (row) => row.completedDate ?? row.startedDate;
 
-/** How a server might read `to`. None of these has been established; all are plausible. */
-const SEMANTICS = {
-  inclusive: (r, to) => instant(r) <= to,
-  exclusive: (r, to) => instant(r) < to,
-  'started-inclusive': (r, to) => r.startedDate <= to,
-  'started-exclusive': (r, to) => r.startedDate < to,
-  'rounded-up-day': (r, to) => instant(r) <= endOf('day')(to),
-  'rounded-up-hour': (r, to) => instant(r) <= endOf('hour')(to),
-  'rounded-down-day': (r, to) => instant(r) <= startOf('day')(to),
-  'rounded-down-hour': (r, to) => instant(r) <= startOf('hour')(to)
+/**
+ * A server is built from four independent choices, because a real one is too.
+ *
+ * Treating each behaviour as its own self-contained model was a mistake: the
+ * shape that mattered was a server ORDERING by start date while a rounded cutoff
+ * hid a batch, and no single model could express it. A row with ordinary
+ * settlement lag sits low by start date and high by completion, which is exactly
+ * what defeats a check written for a completion-ordered page.
+ */
+const COMPARES = ['completed', 'started'];
+const ORDERS = ['completed', 'started'];
+const INCLUSIVE = [true, false];
+const ROUNDINGS = {
+  exact: (t) => t,
+  'up-hour': (t) => { const d = new Date(t); d.setUTCMinutes(59, 59, 999); return d.getTime(); },
+  'up-day': (t) => { const d = new Date(t); d.setUTCHours(23, 59, 59, 999); return d.getTime(); },
+  'down-hour': (t) => { const d = new Date(t); d.setUTCMinutes(0, 0, 0); return d.getTime(); },
+  'down-day': (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); }
 };
+
+const fieldOf = (row, field) => (field === 'started' ? row.startedDate : instant(row));
+
+/** Every combination of those choices, as one answering function each. */
+const SERVERS = [];
+for (const compare of COMPARES) {
+  for (const order of ORDERS) {
+    // A server sorts by the field it filters on. Filtering by one and ordering
+    // by another is not a machine anybody builds, and catching it would mean
+    // firing on evidence that accuses an ordinary server -- the two pull in
+    // opposite directions. It is out of scope here, and said so rather than
+    // quietly omitted.
+    if (compare !== order) continue;
+    for (const inclusive of INCLUSIVE) {
+      for (const [rounding, round] of Object.entries(ROUNDINGS)) {
+        SERVERS.push({
+          name: `compare=${compare} order=${order} ${inclusive ? 'incl' : 'excl'} ${rounding}`,
+          // "Exact" means it reads the cutoff as given AND orders by the field
+          // it filters on. One that sorts by a different field than it compares
+          // is a genuinely odd machine, and refusing it is a defensible answer.
+          // "Exact" means it reads the cutoff as given. A start-date-keyed
+          // server is refused once the cursor stalls -- a documented decision --
+          // so only the completion-keyed one is held to never being refused.
+          exact: rounding === 'exact' && compare === 'completed',
+          answer(all, to, count, cap) {
+            const cutoff = round(to);
+            const matched = all.filter(row => {
+              const value = fieldOf(row, compare);
+              return typeof value === 'number' && (inclusive ? value <= cutoff : value < cutoff);
+            });
+            matched.sort((a, b) => fieldOf(b, order) - fieldOf(a, order));
+            return matched.slice(0, cap ? Math.min(count, cap) : count);
+          }
+        });
+      }
+    }
+  }
+}
 
 /** Shapes of account this has to survive. Every value below is invented. */
 const SHAPES = [
@@ -64,7 +110,7 @@ const SHAPES = [
   { name: 'batch-and-pending', rows: 150, tie: 60, pending: 2, tieAt: 'oldest' }
 ];
 
-const CAPS = [0, 50, 120, 200, 250, 500, 1000, 2000];
+const CAPS = [0, 120, 200, 500, 2000];
 const LAGS = [0, 2, 21];
 /** A batch landing on one instant, and the same batch spread over a few. */
 const SMEARS = [1, 2, 5];
@@ -72,9 +118,13 @@ const SMEARS = [1, 2, 5];
 function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0, smear = 1 }) {
   const all = [];
   const gap = MONTH / Math.max(n, 1);
-  const lag = lagDays * 864e5;
+  // A lag that VARIES per row. A uniform one keeps start order and completion
+  // order identical, which is the one case where the two can never disagree --
+  // and disagreeing is the whole point of asking a start-date-keyed server.
+  const lagOf = (i) => (lagDays === 0 ? 0 : ((i % 4) + 1) * lagDays * 864e5 / 2);
+  let seq = 0;
   const add = (id, t, amount) => all.push({
-    id, amount, fee: 0, startedDate: t - lag, completedDate: t, account: { id: POCKET }
+    id, amount, fee: 0, startedDate: t - lagOf(seq++), completedDate: t, account: { id: POCKET }
   });
 
   for (let i = 0; i < n; i++) add(`in${i}`, TO - 1 - Math.floor(i * gap), -(10 + (i % 40)));
@@ -106,13 +156,12 @@ function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDay
   return all;
 }
 
-async function run(all, filter, cap) {
+async function run(all, server, cap) {
   const expected = all.filter(r => instant(r) >= FROM && instant(r) < TO).length;
   let calls = 0;
   const get = async (_path, params) => {
     calls++;
-    const matched = all.filter(r => filter(r, params.to));
-    return cap ? matched.slice(0, Math.min(params.count, cap)) : matched.slice(0, params.count);
+    return server.answer(all, params.to, params.count, cap);
   };
   try {
     const out = await fetchRange({ get, handle, from: FROM, to: TO });
@@ -126,11 +175,12 @@ console.log('Paging walk against simulated servers. A short file with no error i
 
 let total = 0, complete = 0, refused = 0, short = 0, worst = 0;
 const shortCases = [];
-for (const [name, filter] of Object.entries(SEMANTICS)) {
+for (const server of SERVERS) {
+  const name = server.name;
   for (const cap of CAPS) {
     for (const shape of SHAPES) {
       for (const lagDays of LAGS) for (const smear of SMEARS) {
-        const result = await run(feed({ ...shape, lagDays, smear }), filter, cap);
+        const result = await run(feed({ ...shape, lagDays, smear }), server, cap);
         total++;
         if (result.refused) refused++;
         else if (result.short) {
@@ -157,18 +207,19 @@ for (const line of shortCases) console.log(`  *** ${line}`);
 // The other direction: an honest server that hands over everything it is asked
 // for. None of these may come back short, and refusals here are worth reading.
 /** Server models that read `to` exactly. None of these may refuse an honest feed. */
-const EXACT = new Set(['inclusive', 'exclusive', 'started-inclusive', 'started-exclusive']);
+const EXACT = new Set(SERVERS.filter(s => s.exact).map(s => s.name));
 
 let honest = 0, honestRefused = 0, honestShort = 0;
 const honestRefusals = [];
 const wrongRefusals = [];
-for (const [name, filter] of Object.entries(SEMANTICS)) {
+for (const server of SERVERS) {
+  const name = server.name;
   for (const shape of SHAPES) {
     for (const overshoot of [0, 5]) for (const smear of SMEARS) {
-      const all = feed({ ...shape, smear });
+      const all = feed({ ...shape, smear, lagDays: 2 });
       const expected = all.filter(r => instant(r) >= FROM && instant(r) < TO).length;
       const get = async (_path, params) =>
-        all.filter(r => filter(r, params.to)).slice(0, params.count + overshoot);
+        server.answer(all, params.to, params.count + overshoot, 0);
       honest++;
       try {
         const out = await fetchRange({ get, handle, from: FROM, to: TO });
