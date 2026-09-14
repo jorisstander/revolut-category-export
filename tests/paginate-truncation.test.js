@@ -1020,3 +1020,45 @@ test('a capture run reaching past the margin refuses rather than dropping its ol
   assert.equal(lost.length, 0,
     `lost ${lost.length} of ${expected.length} rows without raising (${lost.map(r => r.id).join(', ')})`);
 });
+
+test('a dormant pocket with one long-held authorisation is not accused of start-ordering', async () => {
+  // The check that catches a capture run asks whether a page is still perfectly
+  // ordered by START while its settlement lags spread past the margin. On its
+  // own that accuses an honest server. A completion-ordered page stays
+  // start-descending whenever each row's lag exceeds its predecessor's by less
+  // than the gap between their completions -- ordinary on a sparse month, or one
+  // whose rows settle instantly, as transfers and top-ups do. Add a single hold
+  // past the margin and the lags on that page span more than a month.
+  //
+  // This is a holiday pocket: dormant for fifty days, one hotel authorisation
+  // taken 45 days out and captured on the 1st, forty instant rows after it. The
+  // server orders and filters on completion, exactly, and caps nothing -- there
+  // is no completion inversion anywhere in the feed. It refused the month
+  // outright, so the pocket could not be exported at all.
+  const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
+  const MONTH_TO = Date.UTC(2026, 7, 31, 22);
+  const DAY = 864e5;
+  const mk = (id, started, completed, amount) => ({
+    ...txnIn(JOINT_POCKET, 15, id), amount, fee: 0, startedDate: started, completedDate: completed
+  });
+
+  const instant = Array.from({ length: 40 }, (_, i) => {
+    const t = MONTH_TO - 1 - Math.floor(i * (MONTH_TO - MONTH_FROM) / 40);
+    return mk(`in${i}`, t, t, -(10 + (i % 30)));         // settles the moment it starts
+  });
+  const hotel = mk('hotel', MONTH_FROM - 45 * DAY, MONTH_FROM + 36e5, -250);
+  const history = Array.from({ length: 120 }, (_, i) => {
+    const t = MONTH_FROM - 50 * DAY - i * 36e5;
+    return mk(`old${i}`, t, t, -5);
+  });
+  const all = desc([...instant, hotel, ...history]);
+  const expected = all.filter(r => r.completedDate >= MONTH_FROM && r.completedDate < MONTH_TO);
+
+  const get = async (_p, params) => all
+    .filter(r => r.completedDate <= params.to)
+    .slice(0, params.count);
+
+  const out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
+  assert.equal(out.length, expected.length,
+    `a complete month was refused or shortened: got ${out.length} of ${expected.length}`);
+});

@@ -160,10 +160,15 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
   const mine = new Map();
   let gaveUpOnTopMargin = false;
-  // Whether any page has come back out of COMPLETION order. A server ordering by
-  // start date gives itself away as soon as settlement lags differ, and it
-  // matters because the walk stops on a page's oldest completion -- which, on
-  // such a feed, is not where the server's own cursor has reached.
+  // Whether any page has shown the feed to be ordered by START date rather than
+  // completion. It matters because the walk stops on a page's oldest completion,
+  // which on such a feed is not where the server's own cursor has reached.
+  //
+  // Two readings set it, and they are not equals. A wide completion inversion is
+  // enough on its own. The second, below, exists because the shape that costs
+  // the most rows -- a capture run -- inverts by a single millisecond, far under
+  // any threshold worth setting, so it has to be recognised by corroboration
+  // instead.
   //
   // Set from the main loop's pages only, not from the probe pages read by
   // `cutoffWasMoved`, `cappingConfirmed` or the stall path. That asymmetry costs
@@ -449,6 +454,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // ordinary page out of it: where every row settled in about the same time,
     // the two orderings agree and neither can hide anything from the other.
     let startsDescending = true;
+    let completionsDescending = true;
     let minLag = Infinity;
     let maxLag = -Infinity;
     for (let i = 0; i < rows.length; i++) {
@@ -458,12 +464,35 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
         minLag = Math.min(minLag, completed - started);
         maxLag = Math.max(maxLag, completed - started);
       }
-      const previous = i > 0 ? rows[i - 1].startedDate : null;
-      if (typeof started === 'number' && typeof previous === 'number' && started > previous) {
+      const previousStart = i > 0 ? rows[i - 1].startedDate : null;
+      if (typeof started === 'number' && typeof previousStart === 'number' && started > previousStart) {
         startsDescending = false;
       }
+      const previousCompleted = i > 0 ? rows[i - 1].completedDate : null;
+      if (typeof completed === 'number' && typeof previousCompleted === 'number' && completed > previousCompleted) {
+        completionsDescending = false;
+      }
     }
-    if (startsDescending && maxLag - minLag > SETTLEMENT_GRACE_MS) notCompletionOrdered = true;
+    // All three, and the middle one is the load-bearing correction. An earlier
+    // version asked only "start-descending, with lags spread past the margin",
+    // on the premise that a completion-ordered server shuffles start dates as
+    // soon as lags differ. That premise is false. A completion-ordered page
+    // stays start-descending whenever each row's lag exceeds its predecessor's
+    // by less than the gap between their completions -- the ordinary case on a
+    // sparse month, or one whose rows settle instantly. Add a single hold past
+    // the margin and it refused: measured, 40 complete months of 88 on a feed
+    // with no completion inversion anywhere, including a dormant holiday pocket
+    // with one hotel authorisation, which could then not be exported at all.
+    //
+    // A server that orders by completion delivers completion-descending pages,
+    // by definition. So requiring the page to break completion order costs
+    // nothing real and removes every one of those false alarms. It is a weaker
+    // claim than the one it replaces, not a proof: it still assumes no
+    // completion-ordered server delivers a page that breaks completion order
+    // while staying perfectly start-ordered with a month of lag spread on it.
+    if (startsDescending && !completionsDescending && maxLag - minLag > SETTLEMENT_GRACE_MS) {
+      notCompletionOrdered = true;
+    }
 
     const completions = completionsOf(rows);
     if (completions.length === 0) {

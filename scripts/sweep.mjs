@@ -114,7 +114,7 @@ const SHAPES = [
   // Rows ABOVE the range, spread across the two-day margin the walk starts from
   // and past it. Every other shape here stops at `TO`, so the margin above the
   // range and the escape that gives up on it were built, reasoned about, and
-  // never once driven by this sweep. Measured: of the 137,040 rows this sweep
+  // never once driven by this sweep. Measured: of the 165,840 rows this sweep
   // now places at or above `TO`, every single one comes from this shape. Adding
   // it found a silent short on its first run.
   { name: 'above-range', rows: 300, above: 120 },
@@ -126,7 +126,14 @@ const SHAPES = [
   // either keeps its holds inside the margin or spreads their completions, so
   // this class was invisible to the sweep while it cost a real row.
   { name: 'capture-run-deep', rows: 300, holds: 60, holdLagDays: 0, holdSpreadDays: 45,
-    historyBelowDays: 50, deepHoldDays: 70 }
+    historyBelowDays: 50, deepHoldDays: 70 },
+  // A dormant pocket with ONE authorisation held past the margin -- a holiday
+  // account with a hotel booking on it. Its rows settle instantly, so on an
+  // honest completion-ordered server every page is start-descending as well,
+  // and the single hold spreads the lags on that page across a month. That is
+  // the exact combination that made a start-ordering check accuse an honest
+  // server and refuse a complete 41-row month.
+  { name: 'lone-deep-hold', rows: 40, holds: 1, holdLagDays: 45, historyBelowDays: 50 }
 ];
 
 const CAPS = [0, 120, 200, 500, 2000];
@@ -267,8 +274,13 @@ const wrongRefusals = [];
 for (const server of SERVERS) {
   const name = server.name;
   for (const shape of SHAPES) {
-    for (const overshoot of [0, 5]) for (const smear of SMEARS) {
-      const all = feed({ ...shape, smear, lagDays: 2 });
+    // Every lag setting, not just one. This half carries the only rule that
+    // forbids refusing a complete month, and it ran solely at `lagDays: 2` --
+    // which gives every ordinary row a different lag and so breaks start order
+    // on every page. Any false refusal needing instantly-settling rows was
+    // therefore invisible to it by construction, and one shipped.
+    for (const overshoot of [0, 5]) for (const smear of SMEARS) for (const honestLag of LAGS) {
+      const all = feed({ ...shape, smear, lagDays: honestLag });
       const expected = all.filter(r => instant(r) >= FROM && instant(r) < TO).length;
       const get = async (_path, params) =>
         server.answer(all, params.to, params.count + overshoot, 0);
@@ -300,8 +312,8 @@ for (const line of wrongRefusals) console.log(`  *** refused an exact-cutoff ser
 
 // A third question the two sections above cannot ask: what if the server is not
 // merely SHAPED oddly, but UNRELIABLE mid-walk? Every model above is a filter
-// and a slice, so each empty page it returns is a genuine end of feed -- 472 of
-// the 55,747 those two sections serve, measured, and not one spurious -- and no
+// and a slice, so each empty page it returns is a genuine end of feed -- 616 of
+// the 68,734 those two sections serve, measured, and not one spurious -- and no
 // row it has once shown ever stops being shown. Both of those gaps turned out to be hiding
 // a real defect this sweep was reporting as clean.
 // Every shape, not a chosen handful. The first version of this section ran four
