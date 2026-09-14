@@ -967,3 +967,56 @@ test('a completion-ordered server that sorts to the second is not accused of sta
   assert.equal(out.length, expected.length,
     `a complete month was not returned whole: got ${out.length} of ${expected.length}`);
 });
+
+test('a capture run reaching past the margin refuses rather than dropping its oldest row', async () => {
+  // Authorisations started across the weeks before the month and settled
+  // together just inside it. On a start-ordered feed they arrive as one
+  // contiguous block of near-identical completions, so there is NO INVERSION to
+  // measure -- the widest the walk saw here was a single millisecond -- and the
+  // detector that keys on inversion size never armed. One hold reaching deeper
+  // than the rest settles as the oldest row of the month, below everything
+  // paging reaches, where the balance chain has nothing beneath it to break
+  // against. It went missing in silence: 360 of 361 rows, well formed.
+  //
+  // What makes it catchable is the run above it: those rows are still perfectly
+  // ordered by START while their settlement lags spread wider than the margin,
+  // and a completion-ordered server shuffles start dates as soon as lags differ.
+  const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
+  const MONTH_TO = Date.UTC(2026, 7, 31, 22);
+  const DAY = 864e5;
+  const mk = (id, started, completed, amount) => ({
+    ...txnIn(JOINT_POCKET, 15, id), amount, fee: 0, startedDate: started, completedDate: completed
+  });
+
+  const ordinary = Array.from({ length: 300 }, (_, i) => {
+    const t = MONTH_TO - 1 - Math.floor(i * (MONTH_TO - MONTH_FROM) / 300);
+    return mk(`in${i}`, t, t, -(10 + (i % 40)));       // no lag at all
+  });
+  const captures = Array.from({ length: 60 }, (_, i) =>
+    mk(`cap${i}`, MONTH_FROM - Math.floor((i + 1) * 40 * DAY / 60), MONTH_FROM + 36e5 + i, -20));
+  const deepHold = mk('deep-hold', MONTH_FROM - 70 * DAY, MONTH_FROM + 1, -33);
+  const history = Array.from({ length: 500 }, (_, i) => {
+    const t = MONTH_FROM - 41 * DAY - i * 36e5;
+    return mk(`old${i}`, t, t, -5);
+  });
+  const all = desc([...ordinary, ...captures, deepHold, ...history]);
+  const expected = all.filter(r => r.completedDate >= MONTH_FROM && r.completedDate < MONTH_TO);
+
+  const get = async (_p, params) => [...all]
+    .filter(r => r.startedDate < params.to)
+    .sort((a, b) => b.startedDate - a.startedDate)
+    .slice(0, params.count);
+
+  let out;
+  try {
+    out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
+  } catch (error) {
+    assert.match(error.message, /Refusing to write|missing between|Exceeded/,
+      `raised, but not for a reason that tells the user to distrust the export: ${error.message}`);
+    return;
+  }
+  const returned = new Set(out.map(r => r.id));
+  const lost = expected.filter(r => !returned.has(r.id));
+  assert.equal(lost.length, 0,
+    `lost ${lost.length} of ${expected.length} rows without raising (${lost.map(r => r.id).join(', ')})`);
+});

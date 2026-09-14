@@ -176,21 +176,36 @@ past the margin proves this account holds authorisations at least that long, and
 stopped at exactly that depth — so a longer one below is possible and cannot be ruled out
 from where it is standing. On a **completion-ordered** feed that costs nothing and the walk
 carries on, because such a row arrives on its completion date however long it was held. On a
-**start-ordered** one it refuses. Measured: without that check, a 42-day hold against the
-30-day margin lost the single oldest row of a 300-row month, silently, on 24 of the sweep's
-configurations — two server models, both start-ordered and rounding the cutoff up to the day —
-one row, well formed, and sitting exactly where the balance chain has nothing beneath it to
-break against. Turning the check on converts those 24 into refusals and costs a further 1224
-configurations that used to export whole, every one of them start-ordered; the completion-keyed
-half of the sweep is unchanged at 3030 complete and 2370 refused, which is the half the
-observed API belongs to.
+**start-ordered** one it refuses. Measured: with the check disabled the sweep returns 255 short
+files in its server-model section and 60 more among the honest feeds, every one start-ordered,
+each losing rows at the oldest end of the month where the balance chain has nothing beneath it
+to break against. Turning it on converts all of those into refusals and costs a further 1287
+configurations that used to export whole; the completion-keyed half is **identical either way**
+at 3300 complete and 2550 refused, and that is the half the observed API belongs to.
 
-It fires only on an inversion wider than two days. Any inversion at all was too sensitive to
-ship: delivery order is not ledger order, and a completion-keyed server that merely sorted on a
-timestamp truncated to the second refused a complete 340-row month. Measured on one feed, a
-genuinely start-ordered server inverts adjacent completions by 31.5 days, while a
-completion-ordered one truncating its sort key to the day inverts by 0.10 — the threshold has
-an order of magnitude either side of it.
+Deciding a feed is start-ordered takes two separate readings, because either one alone misses a
+shape that costs real rows.
+
+The first is an inversion in the delivered completions wider than two days. Any inversion at
+all was too sensitive to ship: delivery order is not ledger order, and a completion-keyed
+server that merely sorted on a timestamp truncated to the second refused a complete 340-row
+month. Measured on one feed, a genuinely start-ordered server inverts adjacent completions by
+31.5 days while a completion-ordered one truncating its sort key to the day inverts by 0.10.
+
+The second exists because the first cannot see a **capture run** — authorisations started
+across the weeks before a month and settled together just inside it. They arrive as one
+contiguous block of near-identical completions, so the widest inversion seen anywhere on such a
+walk was a single millisecond, while the oldest row of the month went missing in silence. Read
+it the other way instead: a completion-ordered server shuffles the start dates as soon as
+settlement lags differ, so a page still perfectly ordered by *start* while the lags on it
+spread wider than the margin is a start-ordered feed. That reading removed 90 silent short
+files and cost nothing measurable — the sweep's complete count is 5864 with and without it.
+
+One arrangement defeats both, and is written down here rather than left implied: a capture run
+lying *entirely* below the margin, with the account's older history interleaved above it. The
+walk stops on that history before it has read a single held row, so it ends holding no evidence
+that any hold exists — nothing in the responses distinguishes it from an ordinary account. No
+fixed margin makes that visible; a larger one only moves the boundary.
 
 It is not free. For an account whose history runs at about the rate of the month being
 exported, a quiet month still costs one request and an ordinary one two to four, because
@@ -198,7 +213,7 @@ those rows sit inside a page that would have been read anyway — but a busy mon
 margin at its own density: measured, ten requests at 1000 rows a month and twenty at 2000.
 Those are **totals**, not what the margin added. `src/core/paginate.js` states the same
 measurement the other way round, as the increment — nothing up to 200 rows, one request at
-400, four at 900, nine at 2000 — and the two are the same numbers, not a disagreement. The
+400, four at 900, nine at 2000 — the same measurement, not a disagreement. The
 distinction is worth keeping straight: reading those totals as increments is how the code
 comment came to claim a small month cost "about three requests more" when it costs none.
 Rows outside the range are discarded either way, so the margin buys nothing but the right to
@@ -322,16 +337,19 @@ authorisations, which this feed is known to emit. Treating that as an accusation
 all. Which balance such a group sat at is decided by the rows around it rather than by the
 group itself.
 
-Four things switch the check off, each deliberate and each a limit worth knowing:
+Four things narrow what the check can conclude, each deliberate and each worth knowing:
 
 - A row carrying no settled balance takes no part. A `PENDING` row has not moved the
   balance, so the settled rows either side must still chain directly across it — which is
   what closed the hole where a pending row sitting exactly at a paging gap concealed it.
 - A row with no `amount` cannot be subtracted, so the chain cannot be continued across it.
-- Where any row in a group carries a non-zero `fee`, the group declines to conclude. A fee
-  accounted for separately from the amount shifts a step by exactly the fee, which cannot be
-  told apart from a missing row; a lone row is given that latitude, so a row must not lose
-  it merely by sharing an instant with another.
+- Where any row in a group carries a non-zero `fee`, a *broken* verdict is softened to
+  *unknown* rather than raised. A fee accounted for separately from the amount shifts a step
+  by exactly the fee, which cannot be told apart from a missing row; a lone row is given that
+  latitude, so a row must not lose it merely by sharing an instant with another. Note the
+  limit: this prevents a false accusation, it does **not** switch the check off. A
+  fee-carrying group can still be read as a path and chained on the single
+  `amountWithCharges ?? amount` convention. No row with a non-zero fee has ever been observed.
 - A set whose balances never move carries no ledger information at all. Pockets that
   report no `balance` field therefore get no completeness check, and the guarantee above
   quietly does not apply to them.
@@ -369,7 +387,7 @@ page caps, account shapes and settlement lags nobody has established for this AP
 walk ever return a short file without saying so? It builds each server from four independent choices — the field it compares, the field it
 orders by, whether the comparison is inclusive, and how coarsely it reads the cutoff — because
 a real one is built that way too, and the shapes that hurt come from the combinations. It runs
-10800 of them plus 1440 feeds an honest server would hand over whole, and exits non-zero if any
+11700 of them plus 1560 feeds an honest server would hand over whole, and exits non-zero if any
 comes back short in silence, or if a server reading the cutoff exactly refuses a complete month.
 It is where the round-down cases above were found, where a batch spread over two milliseconds
 was found to walk straight through the guard meant to stop it, and where treating each
@@ -377,13 +395,13 @@ behaviour as its own self-contained model was found to be the reason none of tha
 sooner.
 
 A third section asks what the first two cannot: what happens when the server is not merely
-shaped oddly but *unreliable* mid-walk. 1440 configurations inject one spurious empty page, and
-24 revert a zero-amount authorisation between two requests. It runs every account shape: the
+shaped oddly but *unreliable* mid-walk. 1560 configurations inject one spurious empty page, and
+26 revert a zero-amount authorisation between two requests. It runs every account shape: the
 first version sampled four of them and missed the defect it was written for, because the shapes
 that catch a believed empty page are the ones carrying `PENDING` rows and those were the two
 left out. Both were added after the fact,
 because both were hiding a real defect the sweep was reporting as clean. Every server model
-in the first two sections is a filter and a slice: measured, 472 of the 52,993 pages those
+in the first two sections is a filter and a slice: measured, 472 of the 55,747 pages those
 two serve come back empty and not one of those is spurious, and no row they have once shown
 ever stops being shown. A harness that only ever meets well-behaved servers proves less than its
 configuration count suggests.
@@ -391,8 +409,8 @@ configuration count suggests.
 One combination is deliberately not built: a server that filters on one field and sorts by
 another. Nobody builds that, and catching it would mean firing on evidence that accuses an
 ordinary server — the two pull in opposite directions. Excluding it hides 276 short files in
-the server-model matrix and 21 more among the honest feeds, so it is a limit rather than a
-clean bill: on such a server the export would be short rather than refused. It is left out
+the server-model matrix, 21 among the honest feeds and 23 among the unreliable ones, so it is
+a limit rather than a clean bill: on such a server the export would be short rather than refused. It is left out
 because it cannot be built, not because it is safe.
 
 That figure was wrong here for a while, and the way it went wrong is worth recording: it read

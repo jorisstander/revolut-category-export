@@ -114,10 +114,19 @@ const SHAPES = [
   // Rows ABOVE the range, spread across the two-day margin the walk starts from
   // and past it. Every other shape here stops at `TO`, so the margin above the
   // range and the escape that gives up on it were built, reasoned about, and
-  // never once driven by this sweep. Measured: of the 122,400 rows this sweep
+  // never once driven by this sweep. Measured: of the 137,040 rows this sweep
   // now places at or above `TO`, every single one comes from this shape. Adding
   // it found a silent short on its first run.
-  { name: 'above-range', rows: 300, above: 120 }
+  { name: 'above-range', rows: 300, above: 120 },
+  // A capture run reaching PAST the margin: authorisations started across weeks
+  // and settled together just inside the month. On a start-ordered feed they
+  // arrive as one contiguous block of near-identical completions, so there is no
+  // inversion to measure -- the widest one seen was a single millisecond -- while
+  // the oldest row of the month went missing in silence. Every other shape here
+  // either keeps its holds inside the margin or spreads their completions, so
+  // this class was invisible to the sweep while it cost a real row.
+  { name: 'capture-run-deep', rows: 300, holds: 60, holdLagDays: 0, holdSpreadDays: 45,
+    historyBelowDays: 50, deepHoldDays: 70 }
 ];
 
 const CAPS = [0, 120, 200, 500, 2000];
@@ -126,7 +135,8 @@ const LAGS = [0, 2, 21];
 const SMEARS = [1, 2, 5];
 
 function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0, smear = 1,
-                holds = 0, holdLagDays = 0, above = 0 }) {
+                holds = 0, holdLagDays = 0, holdSpreadDays = 0, historyBelowDays = 0,
+                deepHoldDays = 0, above = 0 }) {
   const all = [];
   const gap = MONTH / Math.max(n, 1);
   // A lag that VARIES per row. A uniform one keeps start order and completion
@@ -154,17 +164,38 @@ function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDay
     });
   }
   for (let i = 0; i < holds; i++) {
+    // `holdSpreadDays` spreads when they STARTED. Bunched into one minute, every
+    // hold carries the same lag, and a page of them cannot show the lag spread
+    // that gives a start-ordered feed away.
+    const back = holdSpreadDays === 0 ? i * 1000 : Math.floor(i * holdSpreadDays * 864e5 / Math.max(holds, 1));
     all.push({
       id: `hold${i}`, amount: -(20 + (i % 15)), fee: 0,
-      startedDate: FROM - holdLagDays * 864e5 - i * 1000,
+      startedDate: FROM - holdLagDays * 864e5 - back,
       completedDate: FROM + 3e5 + i, account: { id: POCKET }
     });
   }
   // Hourly, so some land inside the two-day margin the walk reads above `to` and
   // the rest above it.
   for (let i = 0; i < above; i++) add(`up${i}`, TO + 36e5 * (i + 1), -(12 + (i % 30)));
+  // One authorisation held longer than everything else and settled as the OLDEST
+  // row of the month, below even the history. On a start-ordered feed nothing
+  // reaches it, and it lands where the balance chain has nothing beneath it to
+  // break against -- so losing it is silent. The rows above it are what make it
+  // catchable: they prove this account holds authorisations past the margin.
+  if (deepHoldDays) {
+    all.push({
+      id: 'deep-hold', amount: -33, fee: 0,
+      startedDate: FROM - deepHoldDays * 864e5,
+      completedDate: FROM + 1, account: { id: POCKET }
+    });
+  }
   const behind = history === undefined ? Math.max(n, 100) : history;
-  for (let i = 0; i < behind; i++) add(`old${i}`, FROM - 1 - Math.floor(i * gap), -5);
+  // `historyBelowDays` pushes the older history below a capture run instead of
+  // interleaving with it. Where it interleaves, the walk stops on those rows'
+  // completions before it has read a single held one -- so it ends with no
+  // evidence of any hold at all, which is the one arrangement nothing can catch.
+  const behindFrom = FROM - historyBelowDays * 864e5;
+  for (let i = 0; i < behind; i++) add(`old${i}`, behindFrom - 1 - Math.floor(i * gap), -5);
 
   all.sort((a, b) => instant(b) - instant(a));
   // A running balance, so the completeness check has something to verify.
@@ -270,7 +301,7 @@ for (const line of wrongRefusals) console.log(`  *** refused an exact-cutoff ser
 // A third question the two sections above cannot ask: what if the server is not
 // merely SHAPED oddly, but UNRELIABLE mid-walk? Every model above is a filter
 // and a slice, so each empty page it returns is a genuine end of feed -- 472 of
-// the 52,993 those two sections serve, measured, and not one spurious -- and no
+// the 55,747 those two sections serve, measured, and not one spurious -- and no
 // row it has once shown ever stops being shown. Both of those gaps turned out to be hiding
 // a real defect this sweep was reporting as clean.
 // Every shape, not a chosen handful. The first version of this section ran four

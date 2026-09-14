@@ -62,6 +62,18 @@ const SETTLEMENT_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 // and put the export budget out of reach at 5600.
 const CUTOFF_ROUNDING_MS = 2 * 24 * 60 * 60 * 1000;
 
+// How wide a completion inversion has to be before it is read as evidence that
+// the server sorts by start date. Below this it is ordinary tie-breaking:
+// measured, a completion-ordered server bucketing its sort key to the day
+// inverts adjacent completions by 0.10 days on a busy month and 0.78 on a sparse
+// one, timezone-shifted buckets included. Above it, a genuinely start-ordered
+// feed inverts by tens of days.
+//
+// The same number as CUTOFF_ROUNDING_MS today, deliberately not the same
+// constant: that one trades request cost against a coarsely-read cutoff, and
+// tuning it for that reason must not quietly retune this.
+const ORDERING_NOISE_MS = 2 * 24 * 60 * 60 * 1000;
+
 export class PaginationError extends Error {
   constructor(message) {
     super(message);
@@ -190,7 +202,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   // server is refused by the balance chain at any volume where it would matter,
   // and never silently shortened, but it could in principle be accused here.
   const shown = new Map();   // every row the server has produced, any pocket
-  const claims = [];         // { cutoff, atMost } from each answer that fell short
+  const claims = [];         // { cutoff, reached, atMost } from each short answer
   let capping = false;
 
   const noteAnswer = (page, size, cutoff) => {
@@ -342,8 +354,12 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // reads an answer's LENGTH as evidence: an empty answer here says "the row
     // is gone" and waves the alarm off. That made it the single exception to the
     // rule stated above, and a spurious empty page landing on exactly this
-    // request let a coarse cutoff through -- 200 rows of 438 written with no
+    // request let a coarse cutoff through -- 200 rows of 270 came back with no
     // error, the whole batch at the oldest end, where the balance chain is blind.
+    // (That is the fixture in `tests/paginate-truncation.test.js` which pins
+    // this. It read 438 for two commits, copied from a scratch reproduction
+    // instead of the fixture that ships, and survived one commit that claimed to
+    // have fixed it because a restore step put the old text back unnoticed.)
     const highest = Math.max(...missing.map(row => row.instant));
     const again = await requestConfirmed(MAX_PAGE_SIZE, highest + CUTOFF_ROUNDING_MS);
     const labels = new Set(again.map(labelOf));
@@ -411,15 +427,43 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       //
       // Measured on one feed: genuinely start-ordered inverts by 31.5 days; a
       // completion-ordered server truncating its sort key to the DAY inverts by
-      // 0.10 days; to the second or hour, not at all. The threshold is the
-      // coarsest cutoff reading this walk already allows for, and it sits an
-      // order of magnitude clear of both.
+      // 0.10 days; to the second or hour, not at all.
       if (typeof newer === 'number' && typeof older === 'number' &&
-          older - newer > CUTOFF_ROUNDING_MS) {
+          older - newer > ORDERING_NOISE_MS) {
         notCompletionOrdered = true;
         break;
       }
     }
+
+    // The other way round, because inversion size alone misses the shape that
+    // matters most. A CAPTURE RUN -- authorisations started across the weeks
+    // before the month and settled together just inside it -- arrives on a
+    // start-ordered feed as one contiguous block of near-identical completions.
+    // There is no inversion to measure: the widest the walk saw on such a feed
+    // was ONE MILLISECOND, while it lost the oldest row of the month in silence.
+    //
+    // So read the evidence the other way. A completion-ordered server shuffles
+    // the start dates as soon as settlement lags differ, so a page that is still
+    // perfectly ordered by START while the lags on it spread wider than the
+    // margin is a start-ordered feed. The lag-spread condition is what keeps an
+    // ordinary page out of it: where every row settled in about the same time,
+    // the two orderings agree and neither can hide anything from the other.
+    let startsDescending = true;
+    let minLag = Infinity;
+    let maxLag = -Infinity;
+    for (let i = 0; i < rows.length; i++) {
+      const started = rows[i].startedDate;
+      const completed = rows[i].completedDate;
+      if (typeof started === 'number' && typeof completed === 'number') {
+        minLag = Math.min(minLag, completed - started);
+        maxLag = Math.max(maxLag, completed - started);
+      }
+      const previous = i > 0 ? rows[i - 1].startedDate : null;
+      if (typeof started === 'number' && typeof previous === 'number' && started > previous) {
+        startsDescending = false;
+      }
+    }
+    if (startsDescending && maxLag - minLag > SETTLEMENT_GRACE_MS) notCompletionOrdered = true;
 
     const completions = completionsOf(rows);
     if (completions.length === 0) {
