@@ -9,3 +9,10 @@ exports/
 # third-party editor JavaScript that loads from remote CDNs, which would
 # contradict this project's zero-dependency claim if it were ever committed.
 docs/design/
+dist/
+
+# Drafts for the trademark and terms-of-service question: correspondence and
+# instructions to a lawyer. This repository is public, and none of that should
+# become so by an absent-minded `git add`. Committing one deliberately still
+# works with `git add -f`.
+docs/legal/

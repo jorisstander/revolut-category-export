@@ -1,0 +1,108 @@
+name: release
+
+# Cut a release from a tag: run everything, build the store package, prove the
+# build is reproducible, and publish the zip with its SHA-256 so the artefact
+# can be checked against this source.
+#
+# Actions are pinned to commit SHAs for the reason given in test.yml: they are
+# the only third-party code in this project, and a mutable tag would exempt
+# exactly that code from the no-dependencies rule. The release itself is created
+# with the `gh` CLI, which is already on the runner, rather than with a
+# third-party release action — one less thing to pin and to trust.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # to create the release; nothing else
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      # No install step: this project has no dependencies, by design.
+      - run: npm test
+      - run: node scripts/sweep.mjs
+
+      # The tag is what people cite; the manifest is what Chrome enforces. If
+      # they disagree, the release is named after a version nobody installed.
+      - name: the tag must match the manifest version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(node -p "require('./manifest.json').version")
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $tag, manifest.json says $manifest"
+            exit 1
+          fi
+          echo "version $manifest"
+
+      # Twice, into different directories, compared. The published hash is only
+      # worth something if the build that produced it can be reproduced, and the
+      # cheapest place to catch a build that has stopped being reproducible is
+      # the run that is about to make the claim.
+      - name: build the package, reproducibly
+        run: |
+          node scripts/package.mjs --out dist/first
+          node scripts/package.mjs --out dist/second
+          first=$(sha256sum dist/first/*.zip | cut -d' ' -f1)
+          second=$(sha256sum dist/second/*.zip | cut -d' ' -f1)
+          if [ "$first" != "$second" ]; then
+            echo "::error::two builds of the same commit differ: $first vs $second"
+            exit 1
+          fi
+          mkdir -p dist/out && cp dist/first/*.zip dist/out/
+          echo "SHA256=$first" >> "$GITHUB_ENV"
+          echo "ZIP=$(ls dist/out/*.zip)" >> "$GITHUB_ENV"
+
+      # Everything in the package must also be in the commit. `package.mjs` takes
+      # its file list from `git ls-files`, so this should be impossible -- which
+      # is the point of checking it here rather than assuming it.
+      - name: nothing in the package is untracked
+        run: |
+          # Collected rather than exited from inside the loop: a `while` fed by a
+          # pipe runs in a subshell, so an `exit` in there ends the subshell and
+          # the step passes regardless.
+          untracked=$(unzip -Z1 "$ZIP" | while read -r path; do
+            git ls-files --error-unmatch "$path" >/dev/null 2>&1 || echo "$path"
+          done)
+          if [ -n "$untracked" ]; then
+            echo "::error::in the package but not tracked in git: $(echo "$untracked" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "$(unzip -Z1 "$ZIP" | wc -l) files, all tracked"
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          ## Install
+
+          From the Chrome Web Store, or unpacked from this tag — see the README.
+
+          ## Verifying this build
+
+          \`\`\`
+          sha256  $SHA256
+          \`\`\`
+
+          The zip is built deterministically from this tag: the same commit
+          produces the same bytes on any machine, and this workflow checks that
+          by building twice and comparing before publishing. Every file in it is
+          tracked in the repository at \`$GITHUB_REF_NAME\`.
+
+          Note that the Chrome Web Store re-signs what it distributes, so the
+          copy Chrome installs is not byte-identical to this zip. To check the
+          copy you actually have, compare its files against this tag rather than
+          its hash against the line above. \`docs/verifying-a-release.md\` has the
+          commands.
+          EOF
+          gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md
