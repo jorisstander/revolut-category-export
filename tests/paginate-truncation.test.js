@@ -313,7 +313,7 @@ test('an exclusive cutoff does not hide a truncated tie group', async () => {
 test('a probe page filled by stale PENDING rows is not read as the end of the feed', async () => {
   // Unsettled rows carry no completion date, so a capped probe page made of
   // nothing but them says nothing about what lies below. Believing it returned
-  // 4 rows of 132.
+  // 4 of the 130 settled rows in range, out of the 132 served.
   const CAP = 2;
   const tieAt = Date.UTC(2026, 7, 15, 5);
   const tie = Array.from({ length: 30 }, (_, i) => ({

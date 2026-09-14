@@ -253,14 +253,6 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // this API. So the walk refuses rather than pick one and be silently wrong.
     if (olderFloor >= floor) throw unreachable();
 
-    // Older rows exist, so the group at this instant can be shown to have been
-    // read whole before the cursor steps past it. A server returning everything
-    // it holds at this cutoff would have carried on into those older rows; if a
-    // full read here comes back with nothing older, it truncated the group, and
-    // the remainder sits at the oldest end of the range where the balance chain
-    // is blind. Measuring this replaced a test on page length -- which the rest
-    // of this walk rejects as evidence, and which a server capping below the
-    // ceiling slipped straight under, returning 170 rows of 350.
     // Older rows are now known to exist, so the group at this instant can be
     // shown to have been read whole before the cursor steps past it. Ask for the
     // largest page the API will give at `floor + 1`: that cutoff takes in the
@@ -269,12 +261,17 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // nothing older than this instant means it stopped short, and the remainder
     // would land at the oldest end of the range where the chain cannot see it.
     //
-    // The cutoff is the whole point. At `floor` an exclusive `to` excludes the
-    // very group being measured, so the guard could never fire: 170 rows of 350,
-    // silently. Reading the answer off the page already in hand instead is no
-    // better -- that page spans more than one instant whenever the cutoff is
-    // rounded coarsely, and then nothing checks the group at all: 100 rows of
-    // 540. Neither shortcut survives not knowing the semantics.
+    // Measuring this at all replaced a test on page length, which the rest of
+    // this walk rejects as evidence and which a server capping below the ceiling
+    // slipped straight under: 170 rows of 350.
+    //
+    // The cutoff is then the whole point, and both shortcuts tried here failed
+    // on it. At `floor`, an exclusive `to` excludes the very group being
+    // measured, so the guard could never fire and lost those same 170 rows in
+    // silence. Reading the answer off the page already in hand is no better --
+    // that page spans more than one instant whenever the cutoff is rounded
+    // coarsely, and then nothing checks the group at all: 100 rows of 540.
+    // Neither survives not knowing the semantics, which is the whole problem.
     const whole = await requestConfirmed(MAX_PAGE_SIZE, floor + 1);
     collect(whole);
     if (!completionsOf(whole).some(value => value < floor)) throw tooManyAtOneInstant();

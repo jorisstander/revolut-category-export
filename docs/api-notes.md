@@ -182,18 +182,22 @@ than assumed:
   start-date-keyed server could not be exported from at all once the cursor stalls; that is
   the right way round, because a refusal is visible and a short file is not.
 - **That the group at the stalled instant was read whole**, before the cursor steps past it.
-  The walk only ever stalls with the cursor one millisecond above that instant, so the page
-  already in hand is a full read of it under an inclusive or an exclusive cutoff alike, asked
-  at the largest size the API will give. Older rows are known to exist by that point, and a
-  server with them to offer would have carried on into them; a page holding nothing but this
-  one instant means it stopped short. This replaced a test on page length, which a server
-  capping below the ceiling slipped straight under, returning 170 rows of 350 — and then a
-  fresh request at the instant itself, which an exclusive cutoff excludes by construction, so
-  it measured nothing and lost the same 170 rows without a word.
+  The group is re-read at `floor + 1`, at the largest size the API will give — a cutoff that
+  takes the instant in under an inclusive `to` and an exclusive one alike. Older rows are
+  known to exist by that point, and a server with them to offer would have carried on into
+  them; an answer holding nothing older than the instant means it stopped short.
+
+  Both shortcuts tried here failed. Reading at `floor` is what an exclusive cutoff excludes by
+  construction, so the guard measured nothing and 170 rows of 350 went missing without a word.
+  Reading the answer off the page already in hand is no better: that page spans more than one
+  instant whenever the cutoff is rounded coarsely, and then nothing checks the group at all —
+  100 rows of 540. Neither survives not knowing the semantics, which is the whole problem.
+  Measuring it at all replaced a test on page length, which a server capping below the ceiling
+  slipped straight under.
 - **That a probe answering with nothing settled has been stepped past**, not believed. A
   capped page can be filled entirely by stale `PENDING` rows while settled history remains
-  below them; reading that as the end of the feed returned 4 of the 130 settled rows in
-  range.
+  below them; reading that as the end of the feed returned 4 of the 130 settled rows in range
+  (out of 132 served, two of them unsettled).
 
 One case stays undecidable from outside, and is therefore refused: more rows sharing a single
 timestamp than one request can return. Whether the group ends there or the server truncated it

@@ -43,8 +43,9 @@ No build step, no dependencies, nothing to compile.
 4. Pin it from the puzzle-piece menu so you can find it.
 
 Chrome 105 or newer, or an equivalent Chromium browser — Edge, Brave, Arc. Manifest V3
-itself landed earlier, but the popup's stylesheet uses `:has()`, which needs 105. Firefox
-is not supported.
+itself landed earlier, but the popup's stylesheet uses `:has()`, which needs 105. Exporting
+works from there on; the popup also uses `mask` and `text-wrap: pretty`, so below Chrome 120
+the success tick shows as a plain square. Firefox is not supported.
 
 ## Use
 
