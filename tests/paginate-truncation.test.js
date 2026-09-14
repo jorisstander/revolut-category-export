@@ -564,8 +564,9 @@ test('a cutoff rounded DOWN does not cost the newest day of a quiet month', asyn
   // The detector that catches a moved cutoff needs something already read to
   // contradict. At the very first request there is nothing, and a quiet month
   // over deep history finishes on that request -- so the rows above the rounded
-  // cutoff are never asked for again and never missed: 38 of 40. Reading a
-  // margin ABOVE the range is what covers that, and only that.
+  // cutoff are never asked for again and never missed -- `scripts/sweep.mjs`
+  // reports it as 38 of 40 on its quiet shape. Reading a margin ABOVE the range
+  // is what covers that, and only that.
   const startOfDay = (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
   const body = Array.from({ length: 30 }, (_, i) => row(2 + (i % 27), `r${i}`, i));
   const lastDay = Array.from({ length: 3 }, (_, i) => {
@@ -589,7 +590,7 @@ test('a server that answers a coarser cutoff than it was given is refused', asyn
   // Reading a margin above the range covers a cutoff rounded down at the range
   // END. It cannot help in the middle of the walk, where every cursor step is
   // rounded down too and skips whatever lies between where the cutoff was asked
-  // and where it landed: 200 rows of 212, with no cap involved at all.
+  // and where it landed -- 200 of the 210 rows this fixture builds, no cap.
   //
   // A page is newest-first and truncated at `count`, so it can only leave out
   // rows OLDER than the ones it carries. A row already seen that is newer than
@@ -607,4 +608,115 @@ test('a server that answers a coarser cutoff than it was given is refused', asyn
     all.filter(r => r.completedDate <= startOfDay(params.to)).slice(0, params.count);
 
   await assertEveryRowOrRaise(get, all);
+});
+
+test('a batch spread over a few milliseconds is not treated as spread over a month', async () => {
+  // The guard asked whether the whole page sat at the stalled instant. That
+  // instant is the page's MINIMUM by construction, so a single row a millisecond
+  // above the batch answered no and disarmed it: 2300 rows of 2700. A settlement
+  // run is not obliged to share an exact timestamp.
+  const CAP = 200;
+  const at = FROM + 36e5;
+  const batch = Array.from({ length: 250 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -7,
+    startedDate: at + (i % 2), completedDate: at + (i % 2)   // two consecutive milliseconds
+  }));
+  const above = Array.from({ length: 300 }, (_, i) => row(3 + (i % 26), `up${i}`, i));
+  const all = desc([...batch, ...above]); // a first month: nothing older at all
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= params.to).slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a batch settled just after the range does not make the range unexportable', async () => {
+  // The walk starts a margin above the range to cover a rounded cutoff. A batch
+  // sitting in that margin is not in the export at all, so stalling on it must
+  // not refuse the month below -- the same principle the margin below already
+  // follows. This refused a clean 300-row August over a batch settled on 1 Sep.
+  const inRange = Array.from({ length: 300 }, (_, i) => row(2 + (i % 28), `in${i}`, i));
+  const after = Array.from({ length: 250 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `after${i}`), amount: -6,
+    startedDate: TO + 2 * 36e5, completedDate: TO + 2 * 36e5
+  }));
+  // History behind the month, so the walk ends at the bottom for ordinary
+  // reasons and the only thing under test is the batch above the range.
+  const older = Array.from({ length: 200 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -5,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const all = desc(inRange);
+  const served = desc([...inRange, ...after, ...older]);
+  const get = async (_p, params) =>
+    served.filter(r => r.completedDate <= params.to).slice(0, Math.min(params.count, 200));
+
+  const out = await fetchRange({ get, handle, from: FROM, to: TO });
+  assert.equal(out.length, all.length, `expected the month, got ${out.length} of ${all.length}`);
+});
+
+test('a transaction that leaves the feed is not an accusation', async () => {
+  // A card authorisation reverted between two requests stops coming back. That
+  // is one row, and a cutoff read coarsely hides a SPAN of them -- so one is not
+  // enough to accuse the server of moving the cutoff. A zero-amount row makes
+  // the balance chain blind, so the accusation would be all the user ever saw.
+  // Each row gets its own instant, and the reverted one is placed so that it is
+  // the OLDEST on the first page: once it stops coming back, it is newer than
+  // everything on the next page and below that page's cutoff, which is exactly
+  // the shape that looks like a moved cutoff.
+  const base = Date.UTC(2026, 7, 30, 12);
+  const rows = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 2, `r${i}`), amount: -(10 + (i % 20)),
+    startedDate: base - i * 36e5, completedDate: base - i * 36e5
+  }));
+  const ghost = {
+    ...txnIn(JOINT_POCKET, 2, 'ghost'), amount: 0,
+    startedDate: base - 198 * 36e5 - 18e5, completedDate: base - 198 * 36e5 - 18e5
+  };
+  // History behind the month, so the walk ends at the bottom for ordinary reasons.
+  const older = Array.from({ length: 200 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -5,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const all = rows;
+  const served = desc([...rows, ...older]);
+  const withGhost = desc([...rows, ...older, ghost]);
+  let seen = 0;
+  const get = async (_p, params) => {
+    seen++;
+    const feed = seen === 1 ? withGhost : served;   // reverted after the first answer
+    return feed.filter(r => r.completedDate <= params.to).slice(0, params.count);
+  };
+
+  // The reverted row was genuinely in the feed when it was read, so it comes
+  // back in the export; what matters is that the walk does not accuse the server
+  // of moving the cutoff because that one row stopped appearing.
+  const out = await fetchRange({ get, handle, from: FROM, to: TO });
+  for (const wanted of all) {
+    assert.ok(out.some(r => r.id === wanted.id), `missing ${wanted.id}`);
+  }
+});
+
+test('a transaction with no id is refused rather than merged with another', async () => {
+  // Pages overlap by design, so rows are recognised across them by identity.
+  // Keying on what the row is made of instead looked safe: two zero-amount
+  // authorisations at one instant with the same description are identical in
+  // every field, collapsed into one, and neither moved the balance, so the chain
+  // could not see the loss.
+  const body = Array.from({ length: 100 }, (_, i) => row(2 + (i % 25), `r${i}`, i));
+  const at = Date.UTC(2026, 7, 15, 9);
+  const anonymous = Array.from({ length: 2 }, () => {
+    const { id, ...rest } = txnIn(JOINT_POCKET, 15, 'dropped');
+    return { ...rest, amount: 0, description: 'auth', startedDate: at, completedDate: at };
+  });
+  const all = desc([...body, ...anonymous]);
+  const get = async (_p, params) => all.filter(r => r.completedDate <= params.to).slice(0, params.count);
+
+  await assert.rejects(
+    () => fetchRange({ get, handle, from: FROM, to: TO }),
+    (err) => {
+      assert.ok(err instanceof PaginationError);
+      assert.match(err.message, /no id/);
+      return true;
+    }
+  );
 });

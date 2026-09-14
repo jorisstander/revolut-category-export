@@ -224,8 +224,9 @@ is documented to make falsely.
 Once the server has contradicted itself this way, its silence stops being evidence and a tie
 group at the bottom of the feed is refused rather than trusted. A complete month that happens
 to share one timestamp makes the same short answers but never contradicts them, so it still
-exports — measured across 260 feeds an honest server would serve whole, the check refuses none
-of them that were not already refused for the documented coarse-cutoff reason.
+exports — `scripts/sweep.mjs` drives every feed an honest server would hand over whole, and
+the check refuses none of them that were not already refused for the documented
+coarse-cutoff reason.
 
 Cost scales with the size of the range, because one request carries at most one page.
 Measured against the module at the default page size, for a month of the stated size against
@@ -236,9 +237,10 @@ the range itself. An account whose
 history runs out inside the range costs two to four more, because that is the path that asks
 the extra question rather than assuming the answer. The 40-page budget is therefore also a
 ceiling on how large a range one export can cover, and a range holding more than that refuses
-rather than paging on. Where the ceiling falls depends on how dense the history behind the
-range is, because the settlement margin below it is read at that density too: measured, 7500
-rows against sparse history and 6000 against an account running at the same rate all along.
+rather than paging on. Where the ceiling falls depends on what surrounds the range, because
+the margins either side are read at whatever density they hold: measured, about 7500 rows for
+the current month over sparse history, and about 6000 for a past month on an account running
+at the same rate throughout, where the margin above the range is populated too.
 
 ### Completeness is verified, not assumed
 
@@ -307,7 +309,9 @@ over deep history finishes on that first request and would never notice — 38 r
 the newest end, where the balance chain is as blind as it is at the oldest. Rows above the
 range are discarded at the end either way.
 
-Four deliberate limits. A server that rounds its cutoff coarser than a millisecond is
+Four deliberate limits, the first of them the refusal just described: a cutoff read more
+coarsely than it was given cannot be paged without gaps, and is refused. A server that rounds
+its cutoff coarser than a millisecond is
 usually walked to completion regardless — a day-granular cutoff exports a 1000-row month in
 seven requests, every row — but where the coarseness actually pins the cursor, the signature
 is identical to a server ignoring the parameter entirely, and the tool refuses rather than
@@ -319,9 +323,10 @@ server behaving oddly should not be able to drive hundreds of them.
 
 `scripts/sweep.mjs` asks the broader question the tests cannot: across the cutoff semantics,
 page caps, account shapes and settlement lags nobody has established for this API, does the
-walk ever return a short file without saying so? It runs 1728 simulated servers and 144 feeds
+walk ever return a short file without saying so? It runs 5184 simulated servers and 432 feeds
 an honest server would hand over whole, and exits non-zero if any of them comes back short in
-silence. It is where the round-down cases above were found.
+silence. It is where the round-down cases above were found, and where a batch spread over two
+milliseconds instead of one was found to walk straight through the guard meant to stop it.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
 exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers —

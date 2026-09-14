@@ -14,9 +14,11 @@ const DEFAULT_PAGE_SIZE = 200;
 // twenty-six. An account running at that volume continuously costs more, the
 // margin below the range being as dense as the range itself. So this ceiling is
 // also a limit on how large a range one export can cover -- roughly this many
-// pages times the page size. Where it falls depends on how dense the history
-// behind the range is: measured, 7500 rows against sparse history and 6000
-// against an account running at the same rate all along.
+// pages times the page size. Where it falls depends on what surrounds the
+// range, because the margins either side are read at whatever density they
+// hold: measured, about 7500 rows for the current month over sparse history,
+// and about 6000 for a past month on an account running at the same rate
+// throughout, where the margin above the range is populated too.
 // A range holding more than that refuses rather than paging on. That is the
 // intended trade: a personal account does not see 8000 transactions in a month,
 // and a visible refusal beats an unbounded run of requests against a bank.
@@ -38,6 +40,14 @@ const MAX_PAGE_SIZE = 2000;
 // measured, nothing up to 400 rows a month, one request at 1000, three at 3000.
 // Rows outside the range are discarded at the end either way.
 const SETTLEMENT_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// How far ABOVE the range the walk starts, which is a different question with a
+// different answer. Below the range it is chasing settlement lag, which runs to
+// days. Above it, it is only covering a cutoff read more coarsely than it was
+// given -- a whole day at the worst seen -- and every extra hour up here is rows
+// fetched and thrown away. A week of it cost six requests on a 5000-row month
+// and put the export budget out of reach at 5600.
+const CUTOFF_ROUNDING_MS = 2 * 24 * 60 * 60 * 1000;
 
 export class PaginationError extends Error {
   constructor(message) {
@@ -66,7 +76,22 @@ const completionsOf = (rows) => rows.map(row => row.completedDate).filter(value 
  * rather than an error, and keying those on `undefined` collapsed every one of
  * them into a single entry -- so they fall back to what the row is made of.
  */
-const keyOf = (row) => (row.id ?? `${row.startedDate}|${row.completedDate}|${row.amount}|${row.description}`);
+const keyOf = (row) => {
+  // Every transaction this API has been seen to return carries an id, and the
+  // walk needs one: pages overlap by design, so rows are recognised across them
+  // by identity. Falling back to what the row is made of looked safe and is not
+  // -- two zero-amount authorisations at the same instant with the same
+  // description are identical in every field, collapse into one entry, and the
+  // balance chain cannot see the loss because neither moved the balance.
+  if (row.id === undefined || row.id === null || row.id === '') {
+    throw new PaginationError(
+      `A transaction came back with no id, so it cannot be told apart from another like it ` +
+      `across the overlapping pages this walk reads. Every transaction this API has been ` +
+      `observed to return has one. Refusing to write a file that may be missing rows.`
+    );
+  }
+  return row.id;
+};
 
 /** The oldest completion on a page, or null when nothing on it has settled. */
 const oldestCompletion = (rows) => {
@@ -98,7 +123,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   // of the month. That loss sits at the NEWEST end, where the balance chain is
   // as blind as it is at the oldest -- 6 rows of 200, measured. Rows above the
   // range are discarded at the end either way.
-  let cursor = to + SETTLEMENT_GRACE_MS;
+  let cursor = to + CUTOFF_ROUNDING_MS;
   let count = pageSize;
   let requests = 0;
 
@@ -201,10 +226,17 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // checked before the walk reads an empty page as the end of the feed, which
     // is how a rounded-down cursor step lost the last ten rows of a batch.
     const newest = settled.length > 0 ? Math.max(...settled) : -Infinity;
+    let missing = 0;
     for (const instant of shown.values()) {
-      if (typeof instant === 'number' && instant > newest && instant < cutoff) return true;
+      if (typeof instant === 'number' && instant > newest && instant < cutoff) missing++;
     }
-    return false;
+    // Two, not one. A cutoff read coarsely hides a SPAN of transactions; a single
+    // row that has stopped coming back is far more likely to have left the feed --
+    // a card authorisation reverted between two requests, say. Accusing the
+    // server on the strength of one row blamed it for something it had not done,
+    // and a zero-amount row makes the balance chain blind, so the accusation
+    // would have been the only thing the user ever saw.
+    return missing >= 2;
   };
 
   const collect = (rows) => {
@@ -287,6 +319,18 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       continue;
     }
 
+    // Stalled ABOVE the range, in the margin read to cover a rounded cutoff.
+    // Those rows are not in the export at all, so a batch sitting up here must
+    // not be able to refuse the month below it -- the same principle the margin
+    // below the range already follows. Give up on the margin and start again at
+    // the range end; the walk has read nothing of the month yet, so it cannot
+    // simply stop the way it can down below.
+    if (floor > to) {
+      cursor = to;
+      count = pageSize;
+      continue;
+    }
+
     // Past the range proper. Everything from `from` upward has already been
     // read, and what is left below is only the settlement margin. A stalled
     // batch down here says nothing about the month being exported, so the walk
@@ -316,11 +360,6 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       `can return, so the rest of them cannot be reached. Refusing to write a partial file.`
     );
 
-    // Whether this page is nothing but the stalled instant. If it is, the page
-    // is exactly the part of that group the server chose to hand over, and there
-    // is no row below it on the page to show the group ended.
-    const allAtFloor = completionsOf(rows).every(value => value === floor);
-
     let older = await requestConfirmed(pageSize, floor - 1);
 
     if (older.length === 0) {
@@ -331,8 +370,14 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       //
       // A server caught capping has already shown it withholds rows while
       // claiming to have none left, so its silence here proves nothing either.
-      if (allAtFloor && await cappingConfirmed()) throw tooManyAtOneInstant();
-      if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
+      // Was this page filled to what was asked for? If so the server may have
+      // cut it part-way through the oldest instant on it, and nothing older
+      // exists to show otherwise. An earlier version asked instead whether the
+      // whole page sat at that instant -- but the instant IS the page's minimum
+      // by construction, so a single row a millisecond above the batch answered
+      // no and disarmed the guard: 2300 rows of 2700, at the end of the range
+      // where the balance chain is blind.
+      if (rows.length >= count || await cappingConfirmed()) throw tooManyAtOneInstant();
       break;
     }
     collect(older);
@@ -354,8 +399,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
         // straight past a truncated batch, on a server that was not even capping:
         // 2022 rows of 2420. Removing the pre-authorisations from the same feed
         // made it refuse, which is what gave the omission away.
-        if (allAtFloor && await cappingConfirmed()) throw tooManyAtOneInstant();
-        if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
+        if (rows.length >= count || await cappingConfirmed()) throw tooManyAtOneInstant();
         break;
       }
       collect(older);

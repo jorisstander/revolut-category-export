@@ -66,8 +66,10 @@ const SHAPES = [
 
 const CAPS = [0, 50, 120, 200, 250, 500, 1000, 2000];
 const LAGS = [0, 2, 21];
+/** A batch landing on one instant, and the same batch spread over a few. */
+const SMEARS = [1, 2, 5];
 
-function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0 }) {
+function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0, smear = 1 }) {
   const all = [];
   const gap = MONTH / Math.max(n, 1);
   const lag = lagDays * 864e5;
@@ -78,7 +80,11 @@ function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDay
   for (let i = 0; i < n; i++) add(`in${i}`, TO - 1 - Math.floor(i * gap), -(10 + (i % 40)));
   if (tie) {
     const at = tieAt === 'oldest' ? FROM + 36e5 : FROM + Math.floor(MONTH / 2);
-    for (let i = 0; i < tie; i++) add(`tie${i}`, at, -7);
+    // `smear` spreads the batch over a few consecutive milliseconds instead of
+    // landing it all on one. A settlement run is not obliged to share an exact
+    // instant, and a guard that asks "is this whole page one instant?" is
+    // disarmed by a single row a millisecond above the rest.
+    for (let i = 0; i < tie; i++) add(`tie${i}`, at + (i % smear), -7);
   }
   for (let i = 0; i < pending; i++) {
     all.push({
@@ -123,20 +129,20 @@ const shortCases = [];
 for (const [name, filter] of Object.entries(SEMANTICS)) {
   for (const cap of CAPS) {
     for (const shape of SHAPES) {
-      for (const lagDays of LAGS) {
-        const result = await run(feed({ ...shape, lagDays }), filter, cap);
+      for (const lagDays of LAGS) for (const smear of SMEARS) {
+        const result = await run(feed({ ...shape, lagDays, smear }), filter, cap);
         total++;
         if (result.refused) refused++;
         else if (result.short) {
           short++;
-          shortCases.push(`${name} cap=${cap || 'none'} ${shape.name} lag=${lagDays}d -> ${result.got}/${result.expected}`);
+          shortCases.push(`${name} cap=${cap || 'none'} ${shape.name} lag=${lagDays}d smear=${smear} -> ${result.got}/${result.expected}`);
         } else {
           complete++;
           worst = Math.max(worst, result.calls);
         }
         if (verbose) {
           const verdict = result.refused ? `refused ${result.refused}` : `${result.got}/${result.expected}`;
-          console.log(`  ${name} cap=${cap || 'none'} ${shape.name} lag=${lagDays}d -> ${verdict}`);
+          console.log(`  ${name} cap=${cap || 'none'} ${shape.name} lag=${lagDays}d smear=${smear} -> ${verdict}`);
         }
       }
     }
@@ -154,8 +160,8 @@ let honest = 0, honestRefused = 0, honestShort = 0;
 const honestRefusals = [];
 for (const [name, filter] of Object.entries(SEMANTICS)) {
   for (const shape of SHAPES) {
-    for (const overshoot of [0, 5]) {
-      const all = feed(shape);
+    for (const overshoot of [0, 5]) for (const smear of SMEARS) {
+      const all = feed({ ...shape, smear });
       const expected = all.filter(r => instant(r) >= FROM && instant(r) < TO).length;
       const get = async (_path, params) =>
         all.filter(r => filter(r, params.to)).slice(0, params.count + overshoot);

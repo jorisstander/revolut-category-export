@@ -218,3 +218,32 @@ test('a gap immediately above a batch is caught at the point the batch opens', (
   ];
   assert.throws(() => assertContinuous(rows), IncompleteExportError);
 });
+
+test('a gap above a batch that cancels out is still caught', () => {
+  // A group whose amounts cancel opens and closes at the same balance, but that
+  // balance still has to be one the row above it allows. Skipping the check
+  // because the group has no net effect lets the gap directly above it through.
+  const rows = [
+    { id: 'newer', amount: -100, balance: 1000, completedDate: 9_000 },
+    // a transaction moving the balance to 1100 is missing here
+    { id: 'pay', amount: 200, balance: 900, completedDate: 5_000 },
+    { id: 'reversal', amount: -200, balance: 700, completedDate: 5_000 }
+    // and the batch is the oldest thing here, so nothing below it can catch the
+    // gap later: the check has to be made where the group opens.
+  ];
+  assert.throws(() => assertContinuous(rows), IncompleteExportError);
+});
+
+test('a batch that cancels out narrows what may follow it, rather than widening it', () => {
+  // Such a group sits at one of its own balances, and which one is decided by
+  // the row above it. Carrying all of them forward instead of the ones that
+  // agree would let the row below match a balance the group never opened at.
+  const rows = [
+    { id: 'newer', amount: -100, balance: 1000, completedDate: 9_000 },  // implies 1100
+    { id: 'pay', amount: 200, balance: 1100, completedDate: 5_000 },
+    { id: 'reversal', amount: -200, balance: 900, completedDate: 5_000 },
+    // the group entered at 1100, so it also left at 1100 -- not at 900
+    { id: 'older', amount: -10, balance: 900, completedDate: 1_000 }
+  ];
+  assert.throws(() => assertContinuous(rows), IncompleteExportError);
+});

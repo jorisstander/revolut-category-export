@@ -29,6 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # CONTRIBUTING asks for this to pass; nothing enforced it until it ran here.
+      # It is the only check that asks whether a server behaviour nobody has
+      # established could make the walk return a short file without saying so.
+      - name: the paging walk must not return a short file in silence
+        run: node scripts/sweep.mjs
+
       # The invariant a link cannot satisfy, and the one Chrome actually enforces.
       - name: host_permissions must name exactly one host
         run: |
