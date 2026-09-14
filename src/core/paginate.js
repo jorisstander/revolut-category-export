@@ -86,12 +86,25 @@ const keyOf = (row) => {
   if (row.id === undefined || row.id === null || row.id === '') {
     throw new PaginationError(
       `A transaction came back with no id, so it cannot be told apart from another like it ` +
-      `across the overlapping pages this walk reads. Every transaction this API has been ` +
-      `observed to return has one. Refusing to write a file that may be missing rows.`
+      `across the overlapping pages this walk reads, and this export would be at risk of ` +
+      `dropping one of them silently. Refusing to write a file that may be missing rows.`
     );
   }
   return row.id;
 };
+
+/**
+ * A label for a row the walk is only keeping track of, not exporting.
+ *
+ * Identity has to be exact for rows that reach the file, and `keyOf` refuses
+ * without it. Rows from the other pockets in the wallet never reach the file --
+ * they are filtered out before anything is written -- so a malformed one among
+ * them must not be able to refuse somebody's month. Here a collision only makes
+ * the bookkeeping below more conservative, never wrong.
+ */
+const labelOf = (row) => (
+  row.id || `${row.startedDate}|${row.completedDate}|${row.amount}|${row.description}`
+);
 
 /** The oldest completion on a page, or null when nothing on it has settled. */
 const oldestCompletion = (rows) => {
@@ -116,6 +129,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   if (!handle?.selector) throw new PaginationError('account handle has no usable selector');
 
   const mine = new Map();
+  let gaveUpOnTopMargin = false;
   // The walk starts a margin ABOVE the range, for the same reason it reads a
   // margin below it. A server rounding its cutoff to whole days is as plausible
   // as one rounding up, and month boundaries are local rather than UTC, so the
@@ -155,7 +169,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // that the server will never show again, and the walk then accuses an honest
     // server of holding rows back. A settled transaction does not move.
     const settled = page.filter(row => typeof row.completedDate === 'number');
-    for (const row of settled) shown.set(keyOf(row), row.completedDate);
+    for (const row of settled) shown.set(labelOf(row), row.completedDate);
     // An EMPTY answer makes the same assertion, but it is the one this API is
     // documented to make falsely, so it is never recorded as a claim -- only
     // answers that came back with something, and with less than was asked for.
@@ -219,24 +233,47 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
    * end. This is the same behaviour met in the middle of the walk, where the
    * margin cannot help, and it is refused rather than guessed at.
    */
-  const cutoffWasMoved = (page, cutoff) => {
+  const cutoffWasMoved = async (page, cutoff) => {
     const settled = page.map(row => row.completedDate).filter(value => typeof value === 'number');
     // An EMPTY answer is the same contradiction taken to its limit: rows already
     // handed over at a higher cutoff must still be at or below this one. It is
     // checked before the walk reads an empty page as the end of the feed, which
     // is how a rounded-down cursor step lost the last ten rows of a batch.
     const newest = settled.length > 0 ? Math.max(...settled) : -Infinity;
-    let missing = 0;
-    for (const instant of shown.values()) {
-      if (typeof instant === 'number' && instant > newest && instant < cutoff) missing++;
+    const missing = [];
+    for (const [label, instant] of shown) {
+      if (typeof instant === 'number' && instant > newest && instant < cutoff) {
+        missing.push({ label, instant });
+      }
     }
-    // Two, not one. A cutoff read coarsely hides a SPAN of transactions; a single
-    // row that has stopped coming back is far more likely to have left the feed --
-    // a card authorisation reverted between two requests, say. Accusing the
-    // server on the strength of one row blamed it for something it had not done,
-    // and a zero-amount row makes the balance chain blind, so the accusation
-    // would have been the only thing the user ever saw.
-    return missing >= 2;
+    if (missing.length === 0) return false;
+
+    // Something that was handed over before is not here now, and there are two
+    // reasons for that: the server is reading the cutoff more coarsely than it
+    // was given, or the transaction has left the feed -- a card authorisation
+    // reverted between two requests does exactly this.
+    //
+    // Counting them cannot tell those apart. Requiring two accepted a coarse
+    // cutoff that hid a single row, and requiring one accused an honest server
+    // over a reverted authorisation; a zero-amount row makes the balance chain
+    // blind either way, so whichever it was would have been the only thing the
+    // user ever saw. So ask. A row that has left the feed stays gone when the
+    // question is put again above it; one the server is holding back comes
+    // straight back.
+    // The question has to clear the rounding window, or it is distorted the same
+    // way the original was: asked one millisecond above the row, a server reading
+    // cutoffs to the day rounds that back down and hides it again, and the walk
+    // concludes it has left the feed. Asked a margin above, the row survives the
+    // rounding and comes back.
+    const highest = Math.max(...missing.map(row => row.instant));
+    const again = await request(MAX_PAGE_SIZE, highest + CUTOFF_ROUNDING_MS);
+    const labels = new Set(again.map(labelOf));
+    if (missing.some(row => labels.has(row.label))) return true;
+
+    // It did not come back -- but only if the answer reached down that far does
+    // that mean anything. An answer that stopped short says nothing either way,
+    // and saying nothing is not permission to carry on.
+    return !again.some(row => typeof row.completedDate === 'number' && row.completedDate <= highest);
   };
 
   const collect = (rows) => {
@@ -266,7 +303,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   while (true) {
     const rows = await requestConfirmed(count, cursor);
 
-    if (cutoffWasMoved(rows, cursor)) {
+    if (await cutoffWasMoved(rows, cursor)) {
       throw new PaginationError(
         `The server answered a cutoff of ${new Date(cursor).toISOString()} with nothing newer than ` +
         `the rows it returned, while transactions are known to lie in between. It is reading the ` +
@@ -326,6 +363,18 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // the range end; the walk has read nothing of the month yet, so it cannot
     // simply stop the way it can down below.
     if (floor > to) {
+      // Once, and only once. The escape sets the cursor to the range end, so a
+      // server still answering above it puts the walk in exactly the state it
+      // was already in: it asked the same cutoff 37 times out of a 40-request
+      // budget before failing with a message about range size. These requests
+      // go to someone's bank.
+      if (gaveUpOnTopMargin) {
+        throw new PaginationError(
+          `The server keeps answering with transactions from after ${new Date(to).toISOString()}, ` +
+          `so the walk cannot reach the range being exported. Refusing to write a partial file.`
+        );
+      }
+      gaveUpOnTopMargin = true;
       cursor = to;
       count = pageSize;
       continue;

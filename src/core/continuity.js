@@ -140,7 +140,16 @@ function groupByInstant(rows) {
   return groups;
 }
 
-const describe = (group) => group.map(row => row.id).join(', ');
+/**
+ * Name the rows either side of a gap, for a message a user is asked to quote in
+ * a public bug report. Ids are shortened the way `spike/snippet.js` shortens
+ * them: enough to tell two rows apart in a report, not enough to be an account
+ * identifier. The README asks for this message verbatim, so it must be safe to
+ * paste.
+ */
+const describe = (group) => group
+  .map(row => (row.id ? `${String(row.id).slice(0, 8)}…` : '(no id)'))
+  .join(', ');
 
 /**
  * @param {Array} rows one account's rows, newest first
@@ -164,9 +173,10 @@ export function assertContinuous(rows) {
 
   const missingBetween = (group, enter) => new IncompleteExportError(
     `Transactions are missing between ${describe(previous)} and ${describe(group)}: the balance ` +
-    `after ${describe(previous)} implies the one before it was ${expected[0]}, but the next row ` +
-    `recorded ${enter}. At least one transaction moved the balance in between and is not in this ` +
-    `export. Refusing to write a file that would reconcile wrongly.`
+    `after ${describe(previous)} does not lead to the one the next row recorded — they are ` +
+    `${Math.abs(expected[0] - enter)} apart in minor units. At least one transaction moved the ` +
+    `balance in between and is not in this export. Refusing to write a file that would reconcile ` +
+    `wrongly.`
   );
 
   for (const group of groupByInstant(settled)) {

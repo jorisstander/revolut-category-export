@@ -390,7 +390,7 @@ test('a page spanning instants still has its group re-read, not read off the pag
   // page already in hand. The page spans instants here -- an hour-granular cutoff
   // rounds up and pulls in rows later in the same hour -- so "is this page all
   // one instant?" answers no, and nothing checks the group that was truncated.
-  // 100 rows of 540 came back that way. The hour granularity matters: at a whole
+  // The hour granularity matters: at a whole
   // day, `floor - 1` stays inside the same window and the walk refuses earlier,
   // so the coarse fixtures alone never reached this check.
   const CAP = 120;
@@ -539,8 +539,8 @@ test('stale pre-authorisations do not waive the check against a capping server',
 test('a cutoff rounded DOWN does not cost the newest day of the range', async () => {
   // Rounding a timestamp down is as plausible as rounding up, and month
   // boundaries are local rather than UTC, so the range end is rarely midnight
-  // anywhere. Starting the walk exactly at `to` then hid the last day: 6 rows of
-  // 200, at the newest end, where the balance chain is as blind as at the oldest.
+  // anywhere. Starting the walk exactly at `to` then hides the last day, at the
+  // newest end, where the balance chain is as blind as it is at the oldest.
   const startOfDay = (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
   const body = Array.from({ length: 180 }, (_, i) => row(1 + (i % 28), `r${i}`, i));
   // On the last day of the range, above the rounded-down cutoff: exactly what
@@ -564,9 +564,9 @@ test('a cutoff rounded DOWN does not cost the newest day of a quiet month', asyn
   // The detector that catches a moved cutoff needs something already read to
   // contradict. At the very first request there is nothing, and a quiet month
   // over deep history finishes on that request -- so the rows above the rounded
-  // cutoff are never asked for again and never missed -- `scripts/sweep.mjs`
-  // reports it as 38 of 40 on its quiet shape. Reading a margin ABOVE the range
-  // is what covers that, and only that.
+  // cutoff are never asked for again and never missed. Reading a margin ABOVE
+  // the range is what covers that, and only that: take the margin away and this
+  // fixture comes back three rows short without a word.
   const startOfDay = (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
   const body = Array.from({ length: 30 }, (_, i) => row(2 + (i % 27), `r${i}`, i));
   const lastDay = Array.from({ length: 3 }, (_, i) => {
@@ -590,7 +590,8 @@ test('a server that answers a coarser cutoff than it was given is refused', asyn
   // Reading a margin above the range covers a cutoff rounded down at the range
   // END. It cannot help in the middle of the walk, where every cursor step is
   // rounded down too and skips whatever lies between where the cutoff was asked
-  // and where it landed -- 200 of the 210 rows this fixture builds, no cap.
+  // and where it landed -- ten of the rows this fixture builds, with no cap at
+  // all involved.
   //
   // A page is newest-first and truncated at `count`, so it can only leave out
   // rows OLDER than the ones it carries. A row already seen that is newer than
@@ -613,8 +614,9 @@ test('a server that answers a coarser cutoff than it was given is refused', asyn
 test('a batch spread over a few milliseconds is not treated as spread over a month', async () => {
   // The guard asked whether the whole page sat at the stalled instant. That
   // instant is the page's MINIMUM by construction, so a single row a millisecond
-  // above the batch answered no and disarmed it: 2300 rows of 2700. A settlement
-  // run is not obliged to share an exact timestamp.
+  // above the batch answered no and disarmed it -- this fixture comes back 500 of
+  // its 550 rows under that guard, and `scripts/sweep.mjs` finds the same at
+  // larger sizes. A settlement run is not obliged to share an exact timestamp.
   const CAP = 200;
   const at = FROM + 36e5;
   const batch = Array.from({ length: 250 }, (_, i) => ({

@@ -156,8 +156,12 @@ for (const line of shortCases) console.log(`  *** ${line}`);
 
 // The other direction: an honest server that hands over everything it is asked
 // for. None of these may come back short, and refusals here are worth reading.
+/** Server models that read `to` exactly. None of these may refuse an honest feed. */
+const EXACT = new Set(['inclusive', 'exclusive', 'started-inclusive', 'started-exclusive']);
+
 let honest = 0, honestRefused = 0, honestShort = 0;
 const honestRefusals = [];
+const wrongRefusals = [];
 for (const [name, filter] of Object.entries(SEMANTICS)) {
   for (const shape of SHAPES) {
     for (const overshoot of [0, 5]) for (const smear of SMEARS) {
@@ -175,6 +179,11 @@ for (const [name, filter] of Object.entries(SEMANTICS)) {
       } catch (error) {
         honestRefused++;
         honestRefusals.push(`${name} ${shape.name}`);
+        // A tool that refuses everything is no use either, and only the other
+        // half of this run was ever enforced. Refusing a coarse cutoff is a
+        // documented decision; refusing a server that reads `to` exactly is a
+        // bug, and one that would otherwise sit here climbing quietly.
+        if (EXACT.has(name)) wrongRefusals.push(`${name} ${shape.name} smear=${smear}`);
       }
     }
   }
@@ -184,6 +193,13 @@ console.log(`\nhonest servers: ${honest} configurations`);
 console.log(`  ${honestRefused} refused   ${honestShort} SHORT WITHOUT ERROR`);
 if (verbose) for (const line of honestRefusals) console.log(`  refused: ${line}`);
 
-const failed = short > 0 || honestShort > 0;
-console.log(`\n${failed ? 'FAIL: a short file was returned without an error.' : 'OK: no short file went unreported.'}`);
+for (const line of wrongRefusals) console.log(`  *** refused an exact-cutoff server: ${line}`);
+
+const failed = short > 0 || honestShort > 0 || wrongRefusals.length > 0;
+console.log(`
+${failed
+  ? 'FAIL: ' + (short + honestShort > 0
+      ? 'a short file was returned without an error.'
+      : 'a server that reads the cutoff exactly was refused.')
+  : 'OK: no short file went unreported, and no exact-cutoff server was refused.'}`);
 process.exit(failed ? 1 : 0);

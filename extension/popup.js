@@ -94,11 +94,22 @@ function renderFooter() {
   if (SOURCE_URL) el.href = SOURCE_URL;
 }
 
-function toDataUrl(csv) {
-  const bytes = new TextEncoder().encode(csv);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `data:text/csv;charset=utf-8;base64,${btoa(binary)}`;
+/**
+ * Hand the file to Chrome without writing its contents into a URL.
+ *
+ * A `data:` URL carries the whole statement in the URL itself, and Chrome keeps
+ * the URL of every download in its history -- so every transaction, amount and
+ * balance stayed there after the file was deleted, readable by anything holding
+ * the `downloads` permission. A blob URL is a reference to memory in this page,
+ * and is revoked as soon as the download has taken it.
+ */
+async function downloadCsv(csv, filename) {
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  try {
+    await chrome.downloads.download({ url, filename, saveAs: true });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function showError(error) {
@@ -180,7 +191,7 @@ buttonEl.addEventListener('click', async () => {
       return;
     }
 
-    await chrome.downloads.download({ url: toDataUrl(csv), filename, saveAs: true });
+    await downloadCsv(csv, filename);
     say(`Exported ${rowCount} transaction${rowCount === 1 ? '' : 's'}.`, 'ok', filename);
   } catch (error) {
     showError(error);

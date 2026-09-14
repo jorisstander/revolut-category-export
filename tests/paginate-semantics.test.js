@@ -103,7 +103,8 @@ test('`to` compared against the started date: refused, never mis-paged', async (
   // The walk used to page past this by reaching below the oldest START date on
   // the page. That is the right question here and the wrong one for a server
   // that merely rounds its cutoff coarser than a millisecond, where it steps
-  // over every row completing in between -- 100 rows of 540, silently. The two
+  // over every row completing in between, silently -- see the coarse-cutoff
+  // fixtures in paginate-truncation.test.js for that. The two
   // answer every probe identically: ordinary settlement lag makes the coarse
   // server satisfy each test for start-date keying that has been tried. Neither
   // model has ever been observed in this API, so the walk refuses rather than
