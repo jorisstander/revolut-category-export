@@ -75,9 +75,6 @@ for (const compare of COMPARES) {
       for (const [rounding, round] of Object.entries(ROUNDINGS)) {
         SERVERS.push({
           name: `compare=${compare} order=${order} ${inclusive ? 'incl' : 'excl'} ${rounding}`,
-          // "Exact" means it reads the cutoff as given AND orders by the field
-          // it filters on. One that sorts by a different field than it compares
-          // is a genuinely odd machine, and refusing it is a defensible answer.
           // "Exact" means it reads the cutoff as given. A start-date-keyed
           // server is refused once the cursor stalls -- a documented decision --
           // so only the completion-keyed one is held to never being refused.

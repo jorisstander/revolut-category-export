@@ -194,7 +194,7 @@ export function assertContinuous(rows) {
     if (analysis.kind === 'broken') {
       throw new IncompleteExportError(
         `Transactions are missing from the group settled together at ` +
-        `${new Date(instantOf(group[0])).toISOString()} (${describe(group)}): their balances do not ` +
+        `${new Date(instantOf(group[0])).toISOString().slice(0, 16)} (${describe(group)}): their balances do not ` +
         `form one unbroken run, so at least one transaction from that batch is not in this export. ` +
         `Refusing to write a file that would reconcile wrongly.`
       );
