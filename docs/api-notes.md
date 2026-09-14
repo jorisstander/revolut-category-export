@@ -204,24 +204,28 @@ timestamp than one request can return. Whether the group ends there or the serve
 cannot be told apart, and the remainder would land at the oldest end of the range where the
 balance chain is blind.
 
-A narrower version of it cannot even be refused, and is recorded here rather than papered
-over. Detecting a truncated group depends on older rows existing to carry on into. If a tie
-group sits at the very oldest instant of the *entire feed*, there are none, and the only test
-left is whether the group filled the largest page the API would hand over. That catches a
-group bigger than the ceiling. It does not catch a server capping *below* the ceiling: such a
-server and a feed that simply ends there answer every question identically — asking for more
-returns the same rows, and asking for older returns nothing, whichever is true. Measured, a
-300-row batch behind a 120-row cap exports 170 of 350 rows in silence under both an inclusive
-and an exclusive cutoff.
+A narrower version of it has no older rows to lean on, and needed a different measurement.
+If a tie group sits at the very oldest instant of the *entire feed* — an account's first month
+— there is nothing below it to carry on into, and a server capping its pages below the size of
+that group answers every question exactly as a feed that simply ends there would. Asking for
+more returns the same rows, and asking for older returns nothing, whichever is true. Left
+alone, a 300-row batch behind a 120-row cap exported 170 of 350 rows in silence, under both an
+inclusive and an exclusive cutoff.
 
-It is left that way deliberately. Every candidate fix tried refuses the other side of the same
-ambiguity: a month whose transactions all share one timestamp, and which really is complete,
-is indistinguishable from the truncated case and would be refused too. Small complete months
-are ordinary and this API has never been seen capping a page, so erring towards the export is
-the lesser harm here — and it is the one place in this walk where that is true. **One
-transaction anywhere below the group closes it**: any account with history behind the month
-being exported is outside this case entirely, which leaves a brand-new account whose first
-transactions all share a timestamp, on a capping server.
+The request log settles it. A page shorter than the count asked for asserts that there is
+nothing more at or below that cutoff — the only claim page length makes that is worth anything,
+and one the walk can check, because it goes on to read overlapping pages. Holding more rows
+below that cutoff than the answer allowed for is a contradiction, and only a server holding
+rows back can produce it. Rows are counted strictly below the cutoff, which every server model
+considered here would have had to include, so the contradiction holds whichever is true. An
+empty answer makes the same assertion and is never recorded, because that is the one this API
+is documented to make falsely.
+
+Once the server has contradicted itself this way, its silence stops being evidence and a tie
+group at the bottom of the feed is refused rather than trusted. A complete month that happens
+to share one timestamp makes the same short answers but never contradicts them, so it still
+exports — measured across 260 feeds an honest server would serve whole, the check refuses none
+of them that were not already refused for the documented coarse-cutoff reason.
 
 Cost scales with the size of the range, because one request carries at most one page.
 Measured against the module at the default page size, for a month of the stated size against

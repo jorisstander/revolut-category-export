@@ -447,3 +447,46 @@ test('stale pre-authorisations at the bottom of a feed do not waive the group ch
 
   await assertEveryRowOrRaise(get, all);
 });
+
+test('a server caught capping cannot claim the feed ends at a tie group', async () => {
+  // The hardest case, and the one that looked undecidable for a while: an
+  // account's FIRST month, a batch at the oldest instant of the whole feed, and
+  // a server capping below the batch size. Nothing older exists to carry on
+  // into, so the usual proof is unavailable, and a capping server answers every
+  // question exactly as a feed that simply ends there would.
+  //
+  // It is decidable from the request log. A page shorter than the count asked
+  // for asserts there is nothing more at or below that cutoff; the walk goes on
+  // to read overlapping pages, and holding more rows below that cutoff than the
+  // answer allowed for is a contradiction only a capping server can produce.
+  // Without it: 170 rows of 350, silently, under both cutoffs.
+  const CAP = 120;
+  const tie = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),
+    startedDate: FROM, completedDate: FROM
+  }));
+  const above = Array.from({ length: 50 }, (_, i) => row(10 + (i % 18), `above${i}`, i));
+  const all = desc([...tie, ...above]); // nothing older anywhere: a first month
+
+  for (const cutoff of [(r, to) => r.completedDate <= to, (r, to) => r.completedDate < to]) {
+    const get = async (_p, params) =>
+      all.filter(r => cutoff(r, params.to)).slice(0, Math.min(params.count, CAP));
+    await assertEveryRowOrRaise(get, all);
+  }
+});
+
+test('a small complete month is not mistaken for a capped one', async () => {
+  // The mirror image, and why every earlier candidate was rejected: a month
+  // whose rows all share one instant, served whole by an honest server, makes
+  // the same short answers a capping server does. The difference is that it
+  // never contradicts them.
+  for (const size of [1, 3, 40, 199]) {
+    const all = desc(Array.from({ length: size }, (_, i) => ({
+      ...txnIn(JOINT_POCKET, 1, `r${i}`), amount: -(10 + i % 20),
+      startedDate: FROM, completedDate: FROM
+    })));
+    const get = async (_p, params) => all.filter(r => r.completedDate <= params.to).slice(0, params.count);
+    const out = await fetchRange({ get, handle, from: FROM, to: TO });
+    assert.equal(out.length, size, `a complete ${size}-row month must export whole`);
+  }
+});

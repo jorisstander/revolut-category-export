@@ -93,6 +93,40 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   let count = pageSize;
   let requests = 0;
 
+  // Whether the server has been caught capping its pages.
+  //
+  // A page shorter than the count asked for is an assertion: there is nothing
+  // more at or below that cutoff. It is the only claim page length makes that is
+  // worth anything -- and it can be checked, because the walk goes on to read
+  // overlapping pages. Hold more rows below that cutoff than the answer allowed
+  // for and the server has contradicted itself, which it can only do by holding
+  // rows back.
+  //
+  // Rows are counted STRICTLY below the cutoff, which every server model would
+  // have had to include: an inclusive `to` returns those and more, an exclusive
+  // one returns exactly those, a coarse one rounds the cutoff up, and one keyed
+  // on start dates sees a start no later than the instant used here. So a
+  // contradiction is a contradiction whichever of them is true.
+  const shown = new Map();   // every row the server has produced, any pocket
+  const claims = [];         // { cutoff, atMost } from each answer that fell short
+  let capping = false;
+
+  const noteAnswer = (page, size, cutoff) => {
+    for (const row of page) shown.set(keyOf(row), instantOf(row));
+    // An EMPTY answer makes the same assertion, but it is the one this API is
+    // documented to make falsely, so it is never recorded as a claim -- only
+    // answers that came back with something, and with less than was asked for.
+    if (page.length > 0 && page.length < size) claims.push({ cutoff, atMost: page.length });
+    if (capping) return;
+    for (const claim of claims) {
+      let below = 0;
+      for (const instant of shown.values()) {
+        if (typeof instant === 'number' && instant < claim.cutoff) below++;
+      }
+      if (below > claim.atMost) { capping = true; return; }
+    }
+  };
+
   const request = async (size, cutoff) => {
     if (requests >= maxPages) {
       throw new PaginationError(
@@ -111,6 +145,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
         `The API's response shape may have changed; refusing to write a file.`
       );
     }
+    noteAnswer(page, size, cutoff);
     return page;
   };
 
@@ -218,6 +253,10 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       // the server had room to hand over all of it: a page filled to the ceiling
       // by a single instant may have been cut, and the remainder would sit at
       // the oldest end of the range where the balance chain is blind.
+      //
+      // A server caught capping has already shown it withholds rows while
+      // claiming to have none left, so its silence here proves nothing either.
+      if (capping && allAtFloor) throw tooManyAtOneInstant();
       if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
       break;
     }
@@ -240,6 +279,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
         // straight past a truncated batch, on a server that was not even capping:
         // 2022 rows of 2420. Removing the pre-authorisations from the same feed
         // made it refuse, which is what gave the omission away.
+        if (capping && allAtFloor) throw tooManyAtOneInstant();
         if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
         break;
       }
