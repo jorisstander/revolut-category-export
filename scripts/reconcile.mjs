@@ -38,14 +38,6 @@ const amountOf = (row) => {
   if (!Number.isFinite(n)) throw new Error(`Could not read an amount from ${JSON.stringify(raw)}`);
   return n;
 };
-// Revolut's own export has no Transaction ID column; ours does. Keying each side
-// on whatever it happens to carry puts them in disjoint key spaces, so every row
-// reads as present on one side only -- a diff that can never match. The id is
-// only usable when BOTH sides have one.
-// Keyed on the PARSED amount, not the raw cell. Revolut writes amounts in the
-// locale of the account, so the same transaction can read -1234.56 on one side
-// and "-1.234,56" on the other; keying on the raw text reported every row as
-// one-sided while the totals agreed to the penny.
 // Our own CSV puts an apostrophe in front of a description beginning = + - @, so
 // a spreadsheet treats it as text rather than a formula. Revolut's export does
 // not. Keying on the raw cell therefore puts the same transaction in two
@@ -58,9 +50,17 @@ const descriptionOf = (row) => {
   return text.startsWith("'") && FORMULA_LEAD.has(text[1]) ? text.slice(1) : text;
 };
 
+// Keyed on the PARSED amount, not the raw cell. Revolut writes amounts in the
+// locale of the account, so the same transaction can read -1234.56 on one side
+// and "-1.234,56" on the other; keying on the raw text reported every row as
+// one-sided while the totals agreed to the penny.
 const composite = (row) =>
   `${pick(row, ['Started Date', 'Completed Date'])}|${amountOf(row).toFixed(2)}|${descriptionOf(row)}`;
 
+// Revolut's own export has no Transaction ID column; ours does. Keying each side
+// on whatever it happens to carry puts them in disjoint key spaces, so every row
+// reads as present on one side only -- a diff that can never match. The id is
+// only usable when BOTH sides have one.
 const keyFactory = (a, b) => {
   const bothHaveIds = [a, b].every(rows => rows.length > 0 && rows.every(row => pick(row, ['Transaction ID'])));
   return bothHaveIds ? (row) => pick(row, ['Transaction ID']) : composite;

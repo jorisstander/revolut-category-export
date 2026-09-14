@@ -30,7 +30,13 @@ export class IncompleteExportError extends Error {
 
 const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
-/** What the row moved the settled balance by. */
+/** What the row moved the settled balance by.
+ *
+ *  One convention, where `balancesBefore` below accepts four. That is sound only
+ *  because `analyseGroup` declines to conclude anything about a group in which
+ *  any fee is non-zero — so the single convention is never the thing an
+ *  accusation rests on. If that latitude is ever removed, this has to widen with
+ *  it, or a group carrying a fee becomes a false alarm. */
 const settlementOf = (row) => num(row.amountWithCharges) ?? num(row.amount);
 
 /**

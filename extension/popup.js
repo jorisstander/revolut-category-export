@@ -126,6 +126,18 @@ async function downloadCsv(csv, filename) {
     }
   };
   chrome.downloads.onChanged.addListener(release);
+
+  // The listener can only go on AFTER the id is known -- `onChanged` fires for
+  // every download in the browser, and without the id there is no way to tell
+  // one that is ours from one that is not, so registering earlier would risk
+  // releasing the blob on somebody else's download finishing. That leaves a gap:
+  // a download that ended inside it never reaches the listener. Ask for this
+  // one's state directly rather than assume it is still running.
+  const [item] = await chrome.downloads.search({ id });
+  if (item && (item.state === 'complete' || item.state === 'interrupted')) {
+    chrome.downloads.onChanged.removeListener(release);
+    URL.revokeObjectURL(url);
+  }
   // If the popup closes first the blob goes with it, which is the same outcome.
 }
 

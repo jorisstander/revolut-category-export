@@ -1,7 +1,8 @@
 # Contributing
 
-Issues and pull requests are welcome. The full guidance lives in the README's
-[Contributing section](README.md#contributing); the short version:
+Issues and pull requests are welcome. The README carries a
+[shorter version](README.md#contributing) of this; this file is the full one, and
+where the two differ this is the one to follow.
 
 - **`npm test` must pass.** It needs no install step, so there is no excuse.
 - **`node scripts/sweep.mjs` must pass too** if you touch the paging walk. The tests pin

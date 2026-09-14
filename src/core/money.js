@@ -23,7 +23,14 @@ export function minorToDecimal(minor, currency) {
   // isSafeInteger, not isInteger: 1e21 is an integer, but String(1e21) is
   // exponential and the digit-slicing below would silently mangle it.
   if (!Number.isSafeInteger(minor)) {
-    throw new TypeError(`amount must be a safe integer in minor units, got ${minor}`);
+    // Says what was wrong with the value, never the value. This message reaches
+    // the popup, and the README asks users to quote what the popup said into a
+    // public issue -- so printing it here would put a raw account balance in a
+    // bug report. `842.19` names the account; "a non-integer number" does not.
+    const kind = typeof minor === 'number'
+      ? (Number.isFinite(minor) ? (Number.isInteger(minor) ? 'an integer too large to be exact' : 'a non-integer number') : String(minor))
+      : `a ${typeof minor}`;
+    throw new TypeError(`amount must be a safe integer in minor units, got ${kind}`);
   }
   const exponent = currencyExponent(currency);
   const sign = minor < 0 ? '-' : '';

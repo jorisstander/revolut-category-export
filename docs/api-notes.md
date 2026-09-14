@@ -1,8 +1,14 @@
 # Observed API facts
 
-Captured 2026-08-09 from a real account via `spike/snippet.js`, and **re-verified
-unchanged on 2026-09-13**: same client version, same account-type keys, same response
-envelope, same selector behaviour, every row still carrying a category.
+Captured 2026-08-09 from a real account, and **re-verified unchanged on 2026-09-13**:
+same client version, same account-type keys, same response envelope, same selector
+behaviour, every row still carrying a category.
+
+Most of it comes from `spike/snippet.js`, which you can run yourself. Two things do
+not, and the difference matters if you are reproducing this: the request headers were
+read off the live web client's own network log — the snippet *sends* `x-client-version`
+rather than reading it back — and the custom-categories endpoint below was called by
+hand. Everything else in this file is something the snippet prints.
 
 Re-verify if the tool starts failing — these are undocumented endpoints and Revolut
 changes them without notice. Running `spike/snippet.js` takes a minute and tells you
@@ -164,6 +170,18 @@ is never fetched, and because the loss is a contiguous run at the oldest end, th
 chain cannot see it. Measured on such a server, 120 rows of 420 went missing without a word,
 and five held authorisations were enough to lose five rows. Thirty days covers the holds that
 occur in practice; it cannot cover an unbounded one, and no fixed margin can.
+
+What it can do is notice when it has been outrun. A row already in hand whose hold reaches
+past the margin proves this account holds authorisations at least that long, and the walk has
+stopped at exactly that depth — so a longer one below is possible and cannot be ruled out
+from where it is standing. On a **completion-ordered** feed that costs nothing and the walk
+carries on, because such a row arrives on its completion date however long it was held. On a
+**start-ordered** one it refuses. Measured: without that check, a 42-day hold against the
+30-day margin lost the single oldest row of a 300-row month, silently, on 24 of the sweep's
+server models — one row, well formed, and sitting exactly where the balance chain has nothing
+beneath it to break against. Turning it on costs 1248 configurations that used to export
+whole, every one of them start-ordered; the completion-keyed half of the sweep is unchanged
+at 3030 complete and 2370 refused, which is the half the observed API belongs to.
 
 It is not free. For an account whose history runs at about the rate of the month being
 exported, a quiet month still costs one request and an ordinary one two to four, because
@@ -337,18 +355,33 @@ page caps, account shapes and settlement lags nobody has established for this AP
 walk ever return a short file without saying so? It builds each server from four independent choices — the field it compares, the field it
 orders by, whether the comparison is inclusive, and how coarsely it reads the cutoff — because
 a real one is built that way too, and the shapes that hurt come from the combinations. It runs
-9900 of them plus 1320 feeds an honest server would hand over whole, and exits non-zero if any
-comes back short in silence, or if a server reading the cutoff exactly is refused. It is where
-the round-down cases above were found, where a batch spread over two milliseconds was found to
-walk straight through the guard meant to stop it, and where treating each behaviour as its own
-self-contained model was found to be the reason none of that had shown up sooner.
+10800 of them plus 1440 feeds an honest server would hand over whole, and exits non-zero if any
+comes back short in silence, or if a server reading the cutoff exactly refuses a complete month.
+It is where the round-down cases above were found, where a batch spread over two milliseconds
+was found to walk straight through the guard meant to stop it, and where treating each
+behaviour as its own self-contained model was found to be the reason none of that had shown up
+sooner.
+
+A third section asks what the first two cannot: what happens when the server is not merely
+shaped oddly but *unreliable* mid-walk. 480 configurations inject one spurious empty page, and
+8 revert a zero-amount authorisation between two requests. Both were added after the fact,
+because both were hiding a real defect the sweep was reporting as clean. Every server model
+in the first two sections is a filter and a slice: measured, 520 of the 55,303 pages they
+serve come back empty and not one of those is spurious, and no row they have once shown ever
+stops being shown. A harness that only ever meets well-behaved servers proves less than its
+configuration count suggests.
 
 One combination is deliberately not built: a server that filters on one field and sorts by
 another. Nobody builds that, and catching it would mean firing on evidence that accuses an
-ordinary server — the two pull in opposite directions. Excluding it removed 96 short files the
-walk does not catch, so it is a limit rather than a clean bill: on such a server the export
-would be short rather than refused. It is left out because it cannot be built, not because it
-is safe.
+ordinary server — the two pull in opposite directions. Excluding it hides 276 short files in
+the server-model matrix and 21 more among the honest feeds, so it is a limit rather than a
+clean bill: on such a server the export would be short rather than refused. It is left out
+because it cannot be built, not because it is safe.
+
+That figure was wrong here for a while, and the way it went wrong is worth recording: it read
+96 for several revisions, which was correct when it was measured and stopped being correct the
+moment two new account shapes were added to the sweep in the same commit. A number measured
+against a fixture set is only true of that fixture set, and nothing re-measures it.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
 exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers —

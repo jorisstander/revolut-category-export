@@ -133,7 +133,7 @@ See [docs/api-notes.md](docs/api-notes.md) for everything observed about the API
 | An account marked *can't be read* | No query parameter returned that account's own rows. It is listed rather than hidden so you know it exists. |
 | *returned no transactions for this month* | Nothing is written, deliberately. An empty CSV reads as a quiet month rather than a failure. |
 | Everything fails at once | Revolut may have shipped a new web client. Run `spike/snippet.js` in the DevTools console on a logged-in tab; it reports what the API is doing now, to compare against `docs/api-notes.md`. |
-| *Transactions are missing…* or *Refusing to write…* | The export stopped rather than write a file it could not prove complete — the balances did not line up, or paging could not reach the whole month. Nothing is written, and nothing is wrong with your account. This is a bug worth reporting: open an issue with the message and the output of `spike/snippet.js`. The message names transactions by the first eight characters of their ids and gives the size of the discrepancy, not your balances, so it is safe to paste. |
+| *Transactions are missing…* or *Refusing to write…* | The export stopped rather than write a file it could not prove complete — the balances did not line up, or paging could not reach the whole month. Nothing is written, and nothing is wrong with your account. This is a bug worth reporting: open an issue with the message and the output of `spike/snippet.js`. The message names transactions by the first eight characters of their ids, gives the size of the discrepancy rather than your balances, and may include the date and time a transaction settled. No amounts, merchants, counterparties or account numbers appear in it. |
 | *came back with no id* | A transaction arrived without an identifier. Pages overlap as the extension reads them, and without an id two similar rows cannot be told apart, so the export stops rather than risk dropping one. Nothing is written. Please report it — this has not been seen in practice. |
 
 ## Development
@@ -163,6 +163,9 @@ one row substituted for another clears both of those.
 Issues and pull requests are welcome. Two constraints before you open one:
 
 - **`npm test` must pass.** It needs no install step, so there is no excuse.
+- **`node scripts/sweep.mjs` must pass too**, if you touch the paging walk. The tests pin
+  failures that were found and fixed; the sweep asks whether any *new* server behaviour
+  makes the walk return a short file without saying so.
 - **No dependencies, ever** — not runtime, not development, not a linter or a test
   framework. This reads a bank account, and every dependency is code a user would have to
   trust without reading. That constraint is the reason the project can honestly ask people

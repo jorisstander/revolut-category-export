@@ -809,3 +809,123 @@ test('an unsettled row that settles mid-walk is not an accusation either', async
   const out = await fetchRange({ get, handle, from: FROM, to: TO });
   for (const wanted of rows) assert.ok(out.some(r => r.id === wanted.id), `missing ${wanted.id}`);
 });
+
+test('a spurious empty answer to the coarse-cutoff probe does not disarm the refusal', async () => {
+  // `cutoffWasMoved` settles "has this row left the feed, or is the server
+  // hiding it?" by asking again above the row. That question is the ONE place
+  // the walk reads an answer's length as evidence, and this endpoint has been
+  // observed answering 200 with an empty array while the account still has
+  // transactions. Asked once, a single spurious empty page said "it is gone",
+  // waved the alarm off, and let a round-down cutoff through: 200 rows of 438,
+  // no error, the whole oldest batch missing where the balance chain is blind.
+  const batch = Array.from({ length: 210 }, (_, i) => row(2, `batch${i}`, i % 4));
+  const ordinary = Array.from({ length: 60 }, (_, i) => row(3 + (i % 27), `in${i}`, i));
+  const history = Array.from({ length: 100 }, (_, i) => row(-i, `old${i}`));
+  const all = desc([...batch, ...ordinary, ...history]);
+
+  // Reads the cutoff rounded DOWN to the hour, exclusive -- the shape the probe
+  // exists to catch -- and answers the probe itself with nothing, once.
+  let emptied = false;
+  const get = async (_p, params) => {
+    const coarse = new Date(params.to);
+    coarse.setUTCMinutes(0, 0, 0);
+    if (params.count >= 2000 && !emptied) { emptied = true; return []; }
+    return all.filter(r => r.completedDate < coarse.getTime()).slice(0, params.count);
+  };
+
+  await assertEveryRowOrRaise(get, all);
+  assert.ok(emptied, 'the probe was never made, so this test proved nothing');
+});
+
+test('an authorisation that reverts mid-walk does not refuse a complete first month', async () => {
+  // A refusal is the safe direction, but not a free one: refusing a month that
+  // IS complete makes the tool useless on the account it is aimed at. `shown` is
+  // never pruned, and a SETTLED row can still leave the feed -- a zero-amount
+  // card authorisation reverting between two requests does exactly that. Counted
+  // against every later short page, one such row refused every first-month
+  // export tried: 9 of 36 shapes, on a server capping nothing and reading the
+  // cutoff exactly, blaming a shared timestamp that was not there.
+  //
+  // No history below the range, which is what a brand-new account looks like.
+  const tie = Array.from({ length: 150 }, (_, i) => row(2, `tie${i}`));
+  const ordinary = Array.from({ length: 60 }, (_, i) => row(3 + (i % 27), `in${i}`, i));
+  const all = desc([...tie, ...ordinary]);
+
+  // Zero amount, and carrying the balance of the row below it, so the chain
+  // reads identically whether or not it is there. Only the walk can refuse this.
+  const ghost = {
+    ...txnIn(JOINT_POCKET, 30, 'ghost'), amount: 0, fee: 0,
+    startedDate: all[0].completedDate - 1, completedDate: all[0].completedDate - 1,
+    balance: all[1].balance
+  };
+
+  let seen = 0;
+  const get = async (_p, params) => {
+    seen++;
+    const feed = seen === 1 ? desc([...all, ghost]) : all;
+    return feed.filter(r => r.completedDate <= params.to).slice(0, params.count);
+  };
+
+  const out = await fetchRange({ get, handle, from: FROM, to: TO });
+  // Every real row, and no refusal. The authorisation itself may or may not come
+  // back -- it was genuinely in the feed when it was asked for, so collecting it
+  // is not wrong -- but its disappearance must not cost the month.
+  const returned = new Set(out.map(r => r.id));
+  const lost = all.filter(r => !returned.has(r.id));
+  assert.equal(lost.length, 0,
+    `a complete month lost ${lost.length} of ${all.length} rows to a reverted authorisation`);
+});
+
+test('a hold reaching past the settlement margin refuses on a start-ordered feed', async () => {
+  // The margin below the range is a fixed guess at how long an authorisation can
+  // be held, and no fixed guess covers an unbounded one. On a completion-ordered
+  // feed that costs nothing -- the row arrives on its completion date whatever it
+  // was held for. On a start-ordered one it sits below everything paging reads,
+  // and the loss lands on the OLDEST row in the range, where the balance chain
+  // has nothing beneath it to break against: one row of three hundred, silent.
+  //
+  // This case needs its own range, and that is the point rather than an
+  // inconvenience. The rest of this file works in whole UTC noons; a real month
+  // boundary is local, so it is rarely midnight or noon anywhere, and a cutoff
+  // rounded up to the day then lands a few hours above `to` instead of twelve.
+  // Measured: at UTC noon this same fixture returns all 300 rows and the test
+  // proves nothing -- which is what two earlier drafts of it did.
+  const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
+  const MONTH_TO = Date.UTC(2026, 7, 31, 22);
+  const gap = (MONTH_TO - MONTH_FROM) / 300;
+  const lagFor = (i) => ((i % 4) + 1) * 10.5 * 864e5;   // 10.5 -> 42 days, straddling the margin
+  let seq = 0;
+  const held = (id, t) => ({ ...txnIn(JOINT_POCKET, 15, id), startedDate: t - lagFor(seq++), completedDate: t });
+
+  const inRange = Array.from({ length: 300 }, (_, i) => held(`in${i}`, MONTH_TO - 1 - Math.floor(i * gap)));
+  const above = Array.from({ length: 120 }, (_, i) => held(`up${i}`, MONTH_TO + 36e5 * (i + 1)));
+  const history = Array.from({ length: 300 }, (_, i) => held(`old${i}`, MONTH_FROM - 1 - Math.floor(i * gap)));
+  const all = desc([...inRange, ...above, ...history]);
+  const expected = all.filter(r => r.completedDate >= MONTH_FROM && r.completedDate < MONTH_TO);
+
+  // Filters AND orders by start date, reading the cutoff rounded up to the day.
+  const get = async (_p, params) => {
+    const coarse = new Date(params.to);
+    coarse.setUTCHours(23, 59, 59, 999);
+    return [...all]
+      .filter(r => r.startedDate < coarse.getTime())
+      .sort((a, b) => b.startedDate - a.startedDate)
+      .slice(0, params.count);
+  };
+
+  // Every row, or raise -- the same contract as the rest of this file, spelled
+  // out here because the helper is bound to the file's own range.
+  let out;
+  try {
+    out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
+  } catch (error) {
+    assert.match(error.message, /Refusing to write|missing between|Exceeded/,
+      `raised, but not for a reason that tells the user to distrust the export: ${error.message}`);
+    return;
+  }
+  const returned = new Set(out.map(r => r.id));
+  const lost = expected.filter(r => !returned.has(r.id));
+  assert.equal(lost.length, 0,
+    `lost ${lost.length} of ${expected.length} rows without raising (${lost.map(r => r.id).join(', ')}) ` +
+    `— a short file that looks complete`);
+});

@@ -41,10 +41,17 @@ const MAX_PAGE_SIZE = 2000;
 // five held authorisations were enough to lose five rows. Thirty days covers the
 // holds that actually occur.
 //
-// It is not free. Measured, a small month costs about three requests more and a
-// busy one about four, because the margin is read at whatever density it holds.
-// Rows outside the range are discarded at the end either way, so the margin buys
-// nothing except the right to stop.
+// It cannot cover an unbounded one, and no fixed number can. What it can do is
+// notice: where a row already in hand was held past this margin, the walk stops
+// on a start-ordered feed rather than guessing that nothing longer lies below.
+// See the stop condition itself for that.
+//
+// It is not free, though it is cheaper than it reads. Measured against history
+// running at the exported month's own rate, this margin adds nothing at all up
+// to 200 rows in the month -- those rows sit inside a page that would have been
+// read anyway -- one request at 400, four at 900 and nine at 2000. Rows outside
+// the range are discarded at the end either way, so the margin buys nothing
+// except the right to stop.
 const SETTLEMENT_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // How far ABOVE the range the walk starts, which is a different question with a
@@ -105,8 +112,13 @@ const keyOf = (row) => {
  * Identity has to be exact for rows that reach the file, and `keyOf` refuses
  * without it. Rows from the other pockets in the wallet never reach the file --
  * they are filtered out before anything is written -- so a malformed one among
- * them must not be able to refuse somebody's month. Here a collision only makes
- * the bookkeeping below more conservative, never wrong.
+ * them must not be able to refuse somebody's month.
+ *
+ * A collision here makes the bookkeeping below WEAKER, not safer: two rows
+ * collapse into one entry, so `shown` under-counts and both the capping check
+ * and the coarse-cutoff detector have less to contradict the server with. It
+ * costs sensitivity, never correctness — which is the right way round, but not
+ * the "more conservative" this comment claimed for several revisions.
  */
 const labelOf = (row) => (
   row.id || `${row.startedDate}|${row.completedDate}|${row.amount}|${row.description}`
@@ -136,13 +148,21 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
   const mine = new Map();
   let gaveUpOnTopMargin = false;
+  // Whether any page has come back out of COMPLETION order. A server ordering by
+  // start date gives itself away as soon as settlement lags differ, and it
+  // matters because the walk stops on a page's oldest completion -- which, on
+  // such a feed, is not where the server's own cursor has reached.
+  let notCompletionOrdered = false;
   // The walk starts a margin ABOVE the range, for the same reason it reads a
   // margin below it. A server rounding its cutoff to whole days is as plausible
   // as one rounding up, and month boundaries are local rather than UTC, so the
   // range end is rarely midnight anywhere: rounding it down hides the last day
   // of the month. That loss sits at the NEWEST end, where the balance chain is
-  // as blind as it is at the oldest -- 6 rows of 200, measured. Rows above the
-  // range are discarded at the end either way.
+  // as blind as it is at the oldest -- six rows of a 200-row month went missing,
+  // measured. (Said that way round on purpose: elsewhere in this project "38
+  // rows of 40" counts what came BACK, and the same mechanism is described both
+  // ways in two files that cite each other.) Rows above the range are discarded
+  // at the end either way.
   let cursor = to + CUTOFF_ROUNDING_MS;
   let count = pageSize;
   let requests = 0;
@@ -181,12 +201,33 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // An EMPTY answer makes the same assertion, but it is the one this API is
     // documented to make falsely, so it is never recorded as a claim -- only
     // answers that came back with something, and with less than was asked for.
-    if (page.length > 0 && page.length < size) claims.push({ cutoff, atMost: settled.length });
+    // Restricting the count to settled rows is not enough on its own: a SETTLED
+    // row can leave the feed too. A zero-amount card authorisation that reverts
+    // between two requests does exactly that, and `shown` is never pruned, so it
+    // was counted against every later claim for the rest of the walk.
+    //
+    // A short page asserts "nothing more at or below this cutoff", and it is
+    // truncated from its OLDEST end -- so anything it withheld lies at or below
+    // its own oldest instant. Count the contradiction THERE rather than across
+    // the whole window under the cutoff: a row that has vanished from the part
+    // of the window the page did reach has left the feed, and is not evidence of
+    // capping. Counting the whole window refused a complete first-month export
+    // over one reverted authorisation -- 9 of 36 shapes, on a server reading the
+    // cutoff exactly and capping nothing -- and did it with a message blaming a
+    // shared timestamp that was not there.
+    //
+    // The bound is `<= reached`, not `< reached`: a page withholding rows sheds
+    // them from the group sitting AT its oldest instant before it sheds anything
+    // below, so excluding that instant stops the real capping cases being seen.
+    if (page.length > 0 && page.length < size) {
+      const reached = settled.length > 0 ? Math.min(...settled.map(row => row.completedDate)) : cutoff;
+      claims.push({ cutoff, reached, atMost: settled.filter(row => row.completedDate <= reached).length });
+    }
     if (capping) return;
     for (const claim of claims) {
       let below = 0;
       for (const seen of shown.values()) {
-        if (seen.completed < claim.cutoff) below++;
+        if (seen.completed < claim.cutoff && seen.completed <= claim.reached) below++;
       }
       if (below > claim.atMost) { capping = true; return; }
     }
@@ -292,8 +333,14 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // cutoffs to the day rounds that back down and hides it again, and the walk
     // concludes it has left the feed. Asked a margin above, the row survives the
     // rounding and comes back.
+    // Asked through `requestConfirmed`, because this is the one place the walk
+    // reads an answer's LENGTH as evidence: an empty answer here says "the row
+    // is gone" and waves the alarm off. That made it the single exception to the
+    // rule stated above, and a spurious empty page landing on exactly this
+    // request let a coarse cutoff through -- 200 rows of 438 written with no
+    // error, the whole batch at the oldest end, where the balance chain is blind.
     const highest = Math.max(...missing.map(row => row.instant));
-    const again = await request(MAX_PAGE_SIZE, highest + CUTOFF_ROUNDING_MS);
+    const again = await requestConfirmed(MAX_PAGE_SIZE, highest + CUTOFF_ROUNDING_MS);
     const labels = new Set(again.map(labelOf));
     if (missing.some(row => labels.has(row.label))) return true;
 
@@ -346,6 +393,15 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
     collect(rows);
 
+    for (let i = 1; i < rows.length; i++) {
+      const newer = rows[i - 1].completedDate;
+      const older = rows[i].completedDate;
+      if (typeof newer === 'number' && typeof older === 'number' && older > newer) {
+        notCompletionOrdered = true;
+        break;
+      }
+    }
+
     const completions = completionsOf(rows);
     if (completions.length === 0) {
       // Nothing settled on this page, so there is no sound way to step the
@@ -363,7 +419,34 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
     // Strictly older, not `<=`. Rows landing exactly on `from` are inside the
     // range, and a page can be cut part-way through a group of them.
-    if (floor < from - SETTLEMENT_GRACE_MS) break;
+    if (floor < from - SETTLEMENT_GRACE_MS) {
+      // The margin is a fixed guess at how long a hold can run, and no fixed
+      // guess covers an unbounded one. On a COMPLETION-ordered feed that costs
+      // nothing: such a row is returned on its completion date regardless of how
+      // long it was held. On a start-ordered one it sits below everything the
+      // walk reads, and the loss lands at the oldest end of the range, where the
+      // balance chain is blind -- one row of three hundred, well formed, silent.
+      //
+      // The account says whether that is a live risk. A row already in hand
+      // whose hold reaches past the margin proves this account holds
+      // authorisations at least that long, and the walk has stopped at exactly
+      // that depth, so a longer one below is possible and cannot be ruled out
+      // from here. Refuse instead of guessing. Where no such row exists the
+      // margin has not been tested and the walk stops as before.
+      const heldPastTheMargin = [...mine.values()].some(row =>
+        typeof row.completedDate === 'number' && row.completedDate >= from && row.completedDate < to &&
+        typeof row.startedDate === 'number' && row.startedDate < from - SETTLEMENT_GRACE_MS);
+      if (notCompletionOrdered && heldPastTheMargin) {
+        throw new PaginationError(
+          `This account holds transactions for longer than the ${SETTLEMENT_GRACE_MS / 86400000} days ` +
+          `of history read below the range, and the server is ordering by start date rather than ` +
+          `completion date — so a transaction held longer still would sit below everything paging ` +
+          `can reach, and its absence would not show in the balances. Refusing to write a file that ` +
+          `may be missing the oldest transactions in the range.`
+        );
+      }
+      break;
+    }
 
     // Step one millisecond PAST the oldest completion rather than onto it, so a
     // group sharing a timestamp is re-fetched whether the cutoff is inclusive or
@@ -464,8 +547,9 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
     // A probe page holding no completions at all proves nothing. A capped page
     // can be filled entirely by stale PENDING rows while settled history remains
-    // below them -- reading that as "the feed has run out" returned 4 rows of
-    // 132. Step below those rows and ask again rather than concluding from them.
+    // below them -- reading that as "the feed has run out" returned 4 of the 130
+    // settled rows in range, out of 132 served, the other two being the unsettled
+    // ones. Step below those rows and ask again rather than concluding from them.
     if (olderFloor === null) {
       const instants = older.map(instantOf).filter(value => typeof value === 'number');
       if (instants.length === 0) throw unreachable();

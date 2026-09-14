@@ -110,7 +110,14 @@ const SHAPES = [
   // everything else -- a minority of rows that are outliers in lag, which a
   // single lag rule applied to every row can never produce.
   { name: 'held-auths', rows: 300, holds: 120, holdLagDays: 21 },
-  { name: 'few-held-auths', rows: 300, holds: 5, holdLagDays: 21 }
+  { name: 'few-held-auths', rows: 300, holds: 5, holdLagDays: 21 },
+  // Rows ABOVE the range, spread across the two-day margin the walk starts from
+  // and past it. Every other shape here stops at `TO`, so the margin above the
+  // range and the escape that gives up on it were built, reasoned about, and
+  // never once driven by this sweep. Measured: of the 122,400 rows this sweep
+  // now places at or above `TO`, every single one comes from this shape. Adding
+  // it found a silent short on its first run.
+  { name: 'above-range', rows: 300, above: 120 }
 ];
 
 const CAPS = [0, 120, 200, 500, 2000];
@@ -119,7 +126,7 @@ const LAGS = [0, 2, 21];
 const SMEARS = [1, 2, 5];
 
 function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0, smear = 1,
-                holds = 0, holdLagDays = 0 }) {
+                holds = 0, holdLagDays = 0, above = 0 }) {
   const all = [];
   const gap = MONTH / Math.max(n, 1);
   // A lag that VARIES per row. A uniform one keeps start order and completion
@@ -153,6 +160,9 @@ function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDay
       completedDate: FROM + 3e5 + i, account: { id: POCKET }
     });
   }
+  // Hourly, so some land inside the two-day margin the walk reads above `to` and
+  // the rest above it.
+  for (let i = 0; i < above; i++) add(`up${i}`, TO + 36e5 * (i + 1), -(12 + (i % 30)));
   const behind = history === undefined ? Math.max(n, 100) : history;
   for (let i = 0; i < behind; i++) add(`old${i}`, FROM - 1 - Math.floor(i * gap), -5);
 
@@ -257,11 +267,86 @@ if (verbose) for (const line of honestRefusals) console.log(`  refused: ${line}`
 
 for (const line of wrongRefusals) console.log(`  *** refused an exact-cutoff server: ${line}`);
 
-const failed = short > 0 || honestShort > 0 || wrongRefusals.length > 0;
+// A third question the two sections above cannot ask: what if the server is not
+// merely SHAPED oddly, but UNRELIABLE mid-walk? Every model above is a filter
+// and a slice, so each empty page it returns is a genuine end of feed -- 520 of
+// them out of 55,303 served, measured, and not one spurious -- and no row it has
+// once shown ever stops being shown. Both of those gaps turned out to be hiding
+// a real defect this sweep was reporting as clean.
+const FLAKY_SHAPES = SHAPES.filter(shape =>
+  ['ordinary', 'batch-oldest', 'held-auths', 'first-month'].includes(shape.name));
+
+let flaky = 0, flakyShort = 0, flakyRefused = 0;
+const flakyCases = [];
+for (const server of SERVERS) {
+  for (const shape of FLAKY_SHAPES) {
+    for (const emptyAt of [1, 2, 3, 4, 5, 6]) {
+      const all = feed({ ...shape, lagDays: 2 });
+      const expected = all.filter(row => instant(row) >= FROM && instant(row) < TO).length;
+      let n = 0;
+      // One spurious empty answer, then honest again. This endpoint has been
+      // observed answering 200 with an empty array while the account still holds
+      // transactions, so this is a shape it genuinely takes.
+      const get = async (_path, params) => {
+        n++;
+        return n === emptyAt ? [] : server.answer(all, params.to, params.count, 0);
+      };
+      flaky++;
+      try {
+        const out = await fetchRange({ get, handle, from: FROM, to: TO });
+        if (out.length < expected) {
+          flakyShort++;
+          flakyCases.push(`${server.name} ${shape.name} empty-at-#${emptyAt} -> ${out.length}/${expected}`);
+        }
+      } catch { flakyRefused++; }
+    }
+  }
+}
+
+// And a row that LEAVES the feed: a zero-amount card authorisation reverting
+// between two requests. Its amount is zero and it carries the balance of the row
+// below it, so the ledger reads the same with or without it and only the paging
+// walk can object. A server reading the cutoff exactly and capping nothing must
+// still hand over the whole month -- refusing a complete month is a bug too.
+let reverting = 0;
+const revertingFailures = [];
+for (const server of SERVERS.filter(model => model.exact)) {
+  for (const shape of FLAKY_SHAPES) {
+    const all = feed({ ...shape, lagDays: 2 });
+    const expected = all.filter(row => instant(row) >= FROM && instant(row) < TO);
+    const at = instant(all[0]) - 1;
+    const ghost = { id: 'ghost', amount: 0, fee: 0, startedDate: at, completedDate: at,
+                    balance: all[1].balance, account: { id: POCKET } };
+    const withGhost = [ghost, ...all].sort((a, b) => instant(b) - instant(a));
+    let n = 0;
+    const get = async (_path, params) => {
+      n++;
+      return server.answer(n === 1 ? withGhost : all, params.to, params.count, 0);
+    };
+    reverting++;
+    try {
+      const out = await fetchRange({ get, handle, from: FROM, to: TO });
+      const ids = new Set(out.map(row => row.id));
+      const lost = expected.filter(row => !ids.has(row.id)).length;
+      if (lost > 0) revertingFailures.push(`${server.name} ${shape.name} -> lost ${lost} of ${expected.length}`);
+    } catch (error) {
+      revertingFailures.push(`${server.name} ${shape.name} -> refused ${error.name} on a complete month`);
+    }
+  }
+}
+
+console.log(`\nunreliable servers: ${flaky} configurations with one spurious empty page`);
+console.log(`  ${flakyRefused} refused   ${flakyShort} SHORT WITHOUT ERROR`);
+for (const line of flakyCases) console.log(`  *** ${line}`);
+console.log(`  ${reverting} configurations with an authorisation reverting mid-walk, on exact-cutoff servers`);
+for (const line of revertingFailures) console.log(`  *** ${line}`);
+
+const failed = short > 0 || honestShort > 0 || wrongRefusals.length > 0 ||
+  flakyShort > 0 || revertingFailures.length > 0;
 console.log(`
 ${failed
-  ? 'FAIL: ' + (short + honestShort > 0
+  ? 'FAIL: ' + (short + honestShort + flakyShort > 0
       ? 'a short file was returned without an error.'
-      : 'a server that reads the cutoff exactly was refused.')
-  : 'OK: no short file went unreported, and no exact-cutoff server was refused.'}`);
+      : 'a complete month was refused on a server that reads the cutoff exactly.')
+  : 'OK: no short file went unreported, and no exact-cutoff server refused a complete month.'}`);
 process.exit(failed ? 1 : 0);
