@@ -41,6 +41,18 @@ test('rejects non-integer minor units', () => {
   assert.throws(() => minorToDecimal(undefined, 'EUR'), TypeError);
 });
 
+test('the rejection names the kind of value, never the value', () => {
+  // This message reaches the popup, and the README asks users to quote what the
+  // popup said into a public issue. The value it is rejecting can be a balance
+  // straight off the account -- `normalize.js` passes `row.balance` through here
+  // -- so printing it would put that figure in a bug report.
+  assert.throws(() => minorToDecimal(842.19, 'EUR'), (error) => {
+    assert.ok(error instanceof TypeError);
+    assert.doesNotMatch(error.message, /842/, `the message quoted the value: ${error.message}`);
+    return true;
+  });
+});
+
 test('currency codes are matched case-insensitively', () => {
   // A lowercase code missing the table would default to two decimals and render
   // a zero-decimal currency 100 times too small.

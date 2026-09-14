@@ -152,6 +152,11 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   // start date gives itself away as soon as settlement lags differ, and it
   // matters because the walk stops on a page's oldest completion -- which, on
   // such a feed, is not where the server's own cursor has reached.
+  //
+  // Set from the main loop's pages only, not from the probe pages read by
+  // `cutoffWasMoved`, `cappingConfirmed` or the stall path. That asymmetry costs
+  // sensitivity and nothing else -- a feed whose ordering only ever shows on a
+  // probe page goes unnoticed and the walk behaves as it did before this existed.
   let notCompletionOrdered = false;
   // The walk starts a margin ABOVE the range, for the same reason it reads a
   // margin below it. A server rounding its cutoff to whole days is as plausible
@@ -396,7 +401,21 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     for (let i = 1; i < rows.length; i++) {
       const newer = rows[i - 1].completedDate;
       const older = rows[i].completedDate;
-      if (typeof newer === 'number' && typeof older === 'number' && older > newer) {
+      // Only an inversion big enough to HIDE A HOLD counts. Treating any
+      // inversion at all as evidence was far too sensitive: a completion-keyed
+      // server reading the cutoff exactly and capping nothing, which merely
+      // sorted on a timestamp truncated to the second and returned rows within
+      // that second oldest-first, refused a complete 340-row month. Delivery
+      // order is not ledger order -- `continuity.js` had to learn the same thing
+      // about batch settlements -- so it cannot carry a refusal on its own.
+      //
+      // Measured on one feed: genuinely start-ordered inverts by 31.5 days; a
+      // completion-ordered server truncating its sort key to the DAY inverts by
+      // 0.10 days; to the second or hour, not at all. The threshold is the
+      // coarsest cutoff reading this walk already allows for, and it sits an
+      // order of magnitude clear of both.
+      if (typeof newer === 'number' && typeof older === 'number' &&
+          older - newer > CUTOFF_ROUNDING_MS) {
         notCompletionOrdered = true;
         break;
       }

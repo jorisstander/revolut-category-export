@@ -269,12 +269,15 @@ for (const line of wrongRefusals) console.log(`  *** refused an exact-cutoff ser
 
 // A third question the two sections above cannot ask: what if the server is not
 // merely SHAPED oddly, but UNRELIABLE mid-walk? Every model above is a filter
-// and a slice, so each empty page it returns is a genuine end of feed -- 520 of
-// them out of 55,303 served, measured, and not one spurious -- and no row it has
-// once shown ever stops being shown. Both of those gaps turned out to be hiding
+// and a slice, so each empty page it returns is a genuine end of feed -- 472 of
+// the 52,993 those two sections serve, measured, and not one spurious -- and no
+// row it has once shown ever stops being shown. Both of those gaps turned out to be hiding
 // a real defect this sweep was reporting as clean.
-const FLAKY_SHAPES = SHAPES.filter(shape =>
-  ['ordinary', 'batch-oldest', 'held-auths', 'first-month'].includes(shape.name));
+// Every shape, not a chosen handful. The first version of this section ran four
+// of them and missed the very defect it was written for: the shapes that catch a
+// believed empty page are the ones carrying PENDING rows, and those were the two
+// it left out. A sample of a fixture set is not the fixture set.
+const FLAKY_SHAPES = SHAPES;
 
 let flaky = 0, flakyShort = 0, flakyRefused = 0;
 const flakyCases = [];
@@ -314,9 +317,12 @@ for (const server of SERVERS.filter(model => model.exact)) {
   for (const shape of FLAKY_SHAPES) {
     const all = feed({ ...shape, lagDays: 2 });
     const expected = all.filter(row => instant(row) >= FROM && instant(row) < TO);
-    const at = instant(all[0]) - 1;
+    // Between the two newest SETTLED rows: an unsettled one carries no balance,
+    // so hanging the ghost off it would build a chain that cannot be read.
+    const settled = all.filter(row => typeof row.completedDate === 'number');
+    const at = settled[0].completedDate - 1;
     const ghost = { id: 'ghost', amount: 0, fee: 0, startedDate: at, completedDate: at,
-                    balance: all[1].balance, account: { id: POCKET } };
+                    balance: settled[1].balance, account: { id: POCKET } };
     const withGhost = [ghost, ...all].sort((a, b) => instant(b) - instant(a));
     let n = 0;
     const get = async (_path, params) => {

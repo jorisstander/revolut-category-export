@@ -133,10 +133,16 @@ async function downloadCsv(csv, filename) {
   // releasing the blob on somebody else's download finishing. That leaves a gap:
   // a download that ended inside it never reaches the listener. Ask for this
   // one's state directly rather than assume it is still running.
-  const [item] = await chrome.downloads.search({ id });
-  if (item && (item.state === 'complete' || item.state === 'interrupted')) {
-    chrome.downloads.onChanged.removeListener(release);
-    URL.revokeObjectURL(url);
+  try {
+    const [item] = await chrome.downloads.search({ id });
+    if (item && (item.state === 'complete' || item.state === 'interrupted')) {
+      chrome.downloads.onChanged.removeListener(release);
+      URL.revokeObjectURL(url);
+    }
+  } catch {
+    // Swallowed on purpose. The file reached Chrome before this ran, so failing
+    // here costs at most a blob sitting until the popup closes -- whereas
+    // letting it out would report an export error over a download that worked.
   }
   // If the popup closes first the blob goes with it, which is the same outcome.
 }

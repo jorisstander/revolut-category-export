@@ -32,11 +32,12 @@ const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? va
 
 /** What the row moved the settled balance by.
  *
- *  One convention, where `balancesBefore` below accepts four. That is sound only
- *  because `analyseGroup` declines to conclude anything about a group in which
- *  any fee is non-zero — so the single convention is never the thing an
- *  accusation rests on. If that latitude is ever removed, this has to widen with
- *  it, or a group carrying a fee becomes a false alarm. */
+ *  One convention, where `balancesBefore` below accepts four. The asymmetry is
+ *  real and is not fully covered: `feeInPlay` only softens a *broken* verdict to
+ *  *unknown*, so a group carrying a non-zero fee can still be read as a `path`
+ *  and chained on this single convention. No row with a non-zero fee has ever
+ *  been observed on this feed, which is why it has not bitten; if one appears,
+ *  this is the first place to look. */
 const settlementOf = (row) => num(row.amountWithCharges) ?? num(row.amount);
 
 /**

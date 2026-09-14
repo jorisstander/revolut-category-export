@@ -160,7 +160,7 @@ one row substituted for another clears both of those.
 
 ## Contributing
 
-Issues and pull requests are welcome. Two constraints before you open one:
+Issues and pull requests are welcome. Three constraints before you open one:
 
 - **`npm test` must pass.** It needs no install step, so there is no excuse.
 - **`node scripts/sweep.mjs` must pass too**, if you touch the paging walk. The tests pin

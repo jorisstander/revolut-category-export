@@ -816,8 +816,9 @@ test('a spurious empty answer to the coarse-cutoff probe does not disarm the ref
   // the walk reads an answer's length as evidence, and this endpoint has been
   // observed answering 200 with an empty array while the account still has
   // transactions. Asked once, a single spurious empty page said "it is gone",
-  // waved the alarm off, and let a round-down cutoff through: 200 rows of 438,
-  // no error, the whole oldest batch missing where the balance chain is blind.
+  // waved the alarm off, and let a round-down cutoff through: 200 rows of the
+  // 270 below came back, no error, the whole oldest batch missing where the
+  // balance chain is blind.
   const batch = Array.from({ length: 210 }, (_, i) => row(2, `batch${i}`, i % 4));
   const ordinary = Array.from({ length: 60 }, (_, i) => row(3 + (i % 27), `in${i}`, i));
   const history = Array.from({ length: 100 }, (_, i) => row(-i, `old${i}`));
@@ -888,8 +889,9 @@ test('a hold reaching past the settlement margin refuses on a start-ordered feed
   // inconvenience. The rest of this file works in whole UTC noons; a real month
   // boundary is local, so it is rarely midnight or noon anywhere, and a cutoff
   // rounded up to the day then lands a few hours above `to` instead of twelve.
-  // Measured: at UTC noon this same fixture returns all 300 rows and the test
-  // proves nothing -- which is what two earlier drafts of it did.
+  // Measured: move this range to UTC noon and the test passes whether the guard
+  // is present or not, so it proves nothing there -- which is exactly what two
+  // earlier drafts of it did.
   const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
   const MONTH_TO = Date.UTC(2026, 7, 31, 22);
   const gap = (MONTH_TO - MONTH_FROM) / 300;
@@ -928,4 +930,40 @@ test('a hold reaching past the settlement margin refuses on a start-ordered feed
   assert.equal(lost.length, 0,
     `lost ${lost.length} of ${expected.length} rows without raising (${lost.map(r => r.id).join(', ')}) ` +
     `— a short file that looks complete`);
+});
+
+test('a completion-ordered server that sorts to the second is not accused of start-ordering', async () => {
+  // The check above reads a page arriving out of completion order as evidence
+  // the server sorts by start date. Delivery order is not ledger order, though
+  // -- `continuity.js` had to learn that about batch settlements -- so on its
+  // own it cannot carry a refusal. Armed on ANY inversion, this server refused a
+  // complete 340-row month: completion-keyed, cutoff read exactly, capping
+  // nothing, withholding nothing. Its only sin is sorting on a timestamp
+  // truncated to the second and returning rows within that second oldest-first.
+  //
+  // The holds below are what make it reachable: without a row held past the
+  // margin the check never runs, so a fixture without them proves nothing here.
+  const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
+  const MONTH_TO = Date.UTC(2026, 7, 31, 22);
+  const gap = (MONTH_TO - MONTH_FROM) / 300;
+  const lagFor = (i) => ((i % 4) + 1) * 10.5 * 864e5;
+  let seq = 0;
+  const held = (id, t) => ({ ...txnIn(JOINT_POCKET, 15, id), startedDate: t - lagFor(seq++), completedDate: t });
+
+  const inRange = Array.from({ length: 300 }, (_, i) => held(`in${i}`, MONTH_TO - 1 - Math.floor(i * gap)));
+  const batch = Array.from({ length: 40 }, (_, i) => held(`batch${i}`, MONTH_FROM + 36e5 + (i % 5)));
+  const history = Array.from({ length: 300 }, (_, i) => held(`old${i}`, MONTH_FROM - 1 - Math.floor(i * gap)));
+  const all = desc([...inRange, ...batch, ...history]);
+  const expected = all.filter(r => r.completedDate >= MONTH_FROM && r.completedDate < MONTH_TO);
+
+  const get = async (_p, params) => all
+    .filter(r => r.completedDate <= params.to)
+    .slice()
+    .sort((a, b) => (Math.floor(b.completedDate / 1000) - Math.floor(a.completedDate / 1000))
+                 || (a.completedDate - b.completedDate))
+    .slice(0, params.count);
+
+  const out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
+  assert.equal(out.length, expected.length,
+    `a complete month was not returned whole: got ${out.length} of ${expected.length}`);
 });

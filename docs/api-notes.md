@@ -178,15 +178,29 @@ from where it is standing. On a **completion-ordered** feed that costs nothing a
 carries on, because such a row arrives on its completion date however long it was held. On a
 **start-ordered** one it refuses. Measured: without that check, a 42-day hold against the
 30-day margin lost the single oldest row of a 300-row month, silently, on 24 of the sweep's
-server models — one row, well formed, and sitting exactly where the balance chain has nothing
-beneath it to break against. Turning it on costs 1248 configurations that used to export
-whole, every one of them start-ordered; the completion-keyed half of the sweep is unchanged
-at 3030 complete and 2370 refused, which is the half the observed API belongs to.
+configurations — two server models, both start-ordered and rounding the cutoff up to the day —
+one row, well formed, and sitting exactly where the balance chain has nothing beneath it to
+break against. Turning the check on converts those 24 into refusals and costs a further 1224
+configurations that used to export whole, every one of them start-ordered; the completion-keyed
+half of the sweep is unchanged at 3030 complete and 2370 refused, which is the half the
+observed API belongs to.
+
+It fires only on an inversion wider than two days. Any inversion at all was too sensitive to
+ship: delivery order is not ledger order, and a completion-keyed server that merely sorted on a
+timestamp truncated to the second refused a complete 340-row month. Measured on one feed, a
+genuinely start-ordered server inverts adjacent completions by 31.5 days, while a
+completion-ordered one truncating its sort key to the day inverts by 0.10 — the threshold has
+an order of magnitude either side of it.
 
 It is not free. For an account whose history runs at about the rate of the month being
 exported, a quiet month still costs one request and an ordinary one two to four, because
 those rows sit inside a page that would have been read anyway — but a busy month pays for the
 margin at its own density: measured, ten requests at 1000 rows a month and twenty at 2000.
+Those are **totals**, not what the margin added. `src/core/paginate.js` states the same
+measurement the other way round, as the increment — nothing up to 200 rows, one request at
+400, four at 900, nine at 2000 — and the two are the same numbers, not a disagreement. The
+distinction is worth keeping straight: reading those totals as increments is how the code
+comment came to claim a small month cost "about three requests more" when it costs none.
 Rows outside the range are discarded either way, so the margin buys nothing but the right to
 stop. A stall *inside* that margin ends the walk rather than raising: it is
 activity outside the month being exported, and it should not be able to abort it.
@@ -363,12 +377,15 @@ behaviour as its own self-contained model was found to be the reason none of tha
 sooner.
 
 A third section asks what the first two cannot: what happens when the server is not merely
-shaped oddly but *unreliable* mid-walk. 480 configurations inject one spurious empty page, and
-8 revert a zero-amount authorisation between two requests. Both were added after the fact,
+shaped oddly but *unreliable* mid-walk. 1440 configurations inject one spurious empty page, and
+24 revert a zero-amount authorisation between two requests. It runs every account shape: the
+first version sampled four of them and missed the defect it was written for, because the shapes
+that catch a believed empty page are the ones carrying `PENDING` rows and those were the two
+left out. Both were added after the fact,
 because both were hiding a real defect the sweep was reporting as clean. Every server model
-in the first two sections is a filter and a slice: measured, 520 of the 55,303 pages they
-serve come back empty and not one of those is spurious, and no row they have once shown ever
-stops being shown. A harness that only ever meets well-behaved servers proves less than its
+in the first two sections is a filter and a slice: measured, 472 of the 52,993 pages those
+two serve come back empty and not one of those is spurious, and no row they have once shown
+ever stops being shown. A harness that only ever meets well-behaved servers proves less than its
 configuration count suggests.
 
 One combination is deliberately not built: a server that filters on one field and sorts by
