@@ -203,3 +203,18 @@ test('two cancelling pairs on consecutive instants do not accuse each other', ()
   ];
   assert.doesNotThrow(() => assertContinuous(rows));
 });
+
+test('a gap immediately above a batch is caught at the point the batch opens', () => {
+  // The balance a group opens at has to match what the row above it implies.
+  // Nothing else covers that link: the group is internally consistent and its
+  // closing balance matches the row below, so if the opening check is not made
+  // the gap directly above it passes unseen.
+  const rows = [
+    { id: 'newer', amount: -100, balance: 1000, completedDate: 9_000 },
+    // a transaction moving the balance from 1300 to 1100 is missing here
+    { id: 'b1', amount: 100, balance: 1300, completedDate: 5_000 },
+    { id: 'b2', amount: 200, balance: 1200, completedDate: 5_000 },
+    { id: 'older', amount: -10, balance: 1000, completedDate: 1_000 }
+  ];
+  assert.throws(() => assertContinuous(rows), IncompleteExportError);
+});

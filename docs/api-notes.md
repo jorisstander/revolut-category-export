@@ -235,8 +235,10 @@ three, 1000 is six, 2000 is eleven, 5000 is twenty-six. An account running at th
 the range itself. An account whose
 history runs out inside the range costs two to four more, because that is the path that asks
 the extra question rather than assuming the answer. The 40-page budget is therefore also a
-ceiling on how large a range one export can cover — around 8000 rows — and a range holding
-more than that refuses rather than paging on.
+ceiling on how large a range one export can cover, and a range holding more than that refuses
+rather than paging on. Where the ceiling falls depends on how dense the history behind the
+range is, because the settlement margin below it is read at that density too: measured, 7500
+rows against sparse history and 6000 against an account running at the same rate all along.
 
 ### Completeness is verified, not assumed
 
@@ -289,7 +291,23 @@ Four things switch the check off, each deliberate and each a limit worth knowing
   report no `balance` field therefore get no completeness check, and the guarantee above
   quietly does not apply to them.
 
-Three deliberate limits. A server that rounds its cutoff coarser than a millisecond is
+A cutoff can also be read *more* coarsely than it is given, and that is refused rather than
+walked. A page comes back newest-first and truncated at `count`, so it can only ever leave
+out rows OLDER than the ones it carries; a row already seen that is newer than everything on
+the page, and still below the cutoff asked for, cannot have been dropped that way. The server
+moved the cutoff. An empty answer is the same contradiction at its limit, and is checked
+before the walk reads one as the end of the feed — that is how a rounded-down cursor step lost
+the last ten rows of a batch.
+
+That check needs something already read to contradict, and at the first request there is
+nothing. So the walk also starts a margin ABOVE the range, for the same reason it reads one
+below: month boundaries are local rather than UTC, so the range end is rarely midnight
+anywhere, and a cutoff rounded down to the day hides the last day of the month. A quiet month
+over deep history finishes on that first request and would never notice — 38 rows of 40, at
+the newest end, where the balance chain is as blind as it is at the oldest. Rows above the
+range are discarded at the end either way.
+
+Four deliberate limits. A server that rounds its cutoff coarser than a millisecond is
 usually walked to completion regardless — a day-granular cutoff exports a 1000-row month in
 seven requests, every row — but where the coarseness actually pins the cursor, the signature
 is identical to a server ignoring the parameter entirely, and the tool refuses rather than
@@ -298,6 +316,12 @@ page can return cannot be read whole by any request, so that refuses too: steppi
 them would drop the remainder at the oldest end of the range, where the balance chain
 cannot see it. And the request budget is 40 pages: these calls go to someone's bank, and a
 server behaving oddly should not be able to drive hundreds of them.
+
+`scripts/sweep.mjs` asks the broader question the tests cannot: across the cutoff semantics,
+page caps, account shapes and settlement lags nobody has established for this API, does the
+walk ever return a short file without saying so? It runs 1728 simulated servers and 144 feeds
+an honest server would hand over whole, and exits non-zero if any of them comes back short in
+silence. It is where the round-down cases above were found.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
 exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers —

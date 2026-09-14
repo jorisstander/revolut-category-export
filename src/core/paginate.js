@@ -14,8 +14,10 @@ const DEFAULT_PAGE_SIZE = 200;
 // twenty-six. An account running at that volume continuously costs more, the
 // margin below the range being as dense as the range itself. So this ceiling is
 // also a limit on how large a range one export can cover -- roughly this many
-// pages times the page size, around 8000 rows --
-// and a range holding more than that refuses rather than paging on. That is the
+// pages times the page size. Where it falls depends on how dense the history
+// behind the range is: measured, 7500 rows against sparse history and 6000
+// against an account running at the same rate all along.
+// A range holding more than that refuses rather than paging on. That is the
 // intended trade: a personal account does not see 8000 transactions in a month,
 // and a visible refusal beats an unbounded run of requests against a bank.
 const DEFAULT_MAX_PAGES = 40;
@@ -89,7 +91,14 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   if (!handle?.selector) throw new PaginationError('account handle has no usable selector');
 
   const mine = new Map();
-  let cursor = to;
+  // The walk starts a margin ABOVE the range, for the same reason it reads a
+  // margin below it. A server rounding its cutoff to whole days is as plausible
+  // as one rounding up, and month boundaries are local rather than UTC, so the
+  // range end is rarely midnight anywhere: rounding it down hides the last day
+  // of the month. That loss sits at the NEWEST end, where the balance chain is
+  // as blind as it is at the oldest -- 6 rows of 200, measured. Rows above the
+  // range are discarded at the end either way.
+  let cursor = to + SETTLEMENT_GRACE_MS;
   let count = pageSize;
   let requests = 0;
 
@@ -104,19 +113,28 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
   //
   // Rows are counted STRICTLY below the cutoff, which every server model would
   // have had to include: an inclusive `to` returns those and more, an exclusive
-  // one returns exactly those, a coarse one rounds the cutoff up, and one keyed
-  // on start dates sees a start no later than the instant used here. So a
-  // contradiction is a contradiction whichever of them is true.
+  // one returns exactly those, a coarse one rounding the cutoff UP takes in more
+  // still, and one keyed on start dates sees a start no later than the instant
+  // used here. So a contradiction is a contradiction whichever of those is true.
+  // A cutoff rounded DOWN is the one shape this argument does not cover; such a
+  // server is refused by the balance chain at any volume where it would matter,
+  // and never silently shortened, but it could in principle be accused here.
   const shown = new Map();   // every row the server has produced, any pocket
   const claims = [];         // { cutoff, atMost } from each answer that fell short
   let capping = false;
 
   const noteAnswer = (page, size, cutoff) => {
-    for (const row of page) shown.set(keyOf(row), instantOf(row));
+    // Only SETTLED rows are counted, on both sides of the comparison. An
+    // unsettled row's instant is its start date and is not stable: a
+    // pre-authorisation released between two requests leaves a row recorded here
+    // that the server will never show again, and the walk then accuses an honest
+    // server of holding rows back. A settled transaction does not move.
+    const settled = page.filter(row => typeof row.completedDate === 'number');
+    for (const row of settled) shown.set(keyOf(row), row.completedDate);
     // An EMPTY answer makes the same assertion, but it is the one this API is
     // documented to make falsely, so it is never recorded as a claim -- only
     // answers that came back with something, and with less than was asked for.
-    if (page.length > 0 && page.length < size) claims.push({ cutoff, atMost: page.length });
+    if (page.length > 0 && page.length < size) claims.push({ cutoff, atMost: settled.length });
     if (capping) return;
     for (const claim of claims) {
       let below = 0;
@@ -162,13 +180,70 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     return page.length > 0 ? page : request(size + 1, cutoff);
   };
 
+  /**
+   * Whether the server answered a cutoff other than the one it was given.
+   *
+   * A page is newest-first and truncated at `count`, so it can only ever leave
+   * out rows OLDER than the ones it carries. A row already known to the walk
+   * that is newer than everything on the page, and still below the cutoff asked
+   * for, cannot have been dropped that way: the server must have moved the
+   * cutoff down -- rounding it to a whole day or hour, say. Every cursor step
+   * then skips the rows between where the cutoff was asked and where it landed.
+   *
+   * Reading a margin above the range covers a cutoff rounded down at the range
+   * end. This is the same behaviour met in the middle of the walk, where the
+   * margin cannot help, and it is refused rather than guessed at.
+   */
+  const cutoffWasMoved = (page, cutoff) => {
+    const settled = page.map(row => row.completedDate).filter(value => typeof value === 'number');
+    // An EMPTY answer is the same contradiction taken to its limit: rows already
+    // handed over at a higher cutoff must still be at or below this one. It is
+    // checked before the walk reads an empty page as the end of the feed, which
+    // is how a rounded-down cursor step lost the last ten rows of a batch.
+    const newest = settled.length > 0 ? Math.max(...settled) : -Infinity;
+    for (const instant of shown.values()) {
+      if (typeof instant === 'number' && instant > newest && instant < cutoff) return true;
+    }
+    return false;
+  };
+
   const collect = (rows) => {
     for (const row of rowsBelongingTo(rows, handle.pocketId)) mine.set(keyOf(row), row);
   };
 
+  /**
+   * Whether the server has been caught capping, asking one more question first.
+   *
+   * A server capping at or above the page size never returns a page short of
+   * what was asked for during the walk, so it never contradicts itself and the
+   * check above never fires: a batch at the oldest instant of a first month came
+   * back 250 rows of 350, and at a cap of 899, 949 of 950 -- one row short, well
+   * formed, and past the balance chain because the loss sits where it is blind.
+   *
+   * Every hypothesis agrees about the stalled instant. They disagree about the
+   * whole range, which is why this re-asks the range end at the ceiling: an
+   * honest server hands back everything it holds, a capping one hands back its
+   * cap, and that answer is short of what was asked and contradicts what the
+   * walk already has. It runs only on the end-of-feed stall path.
+   */
+  const cappingConfirmed = async () => {
+    if (!capping) collect(await requestConfirmed(MAX_PAGE_SIZE, to));
+    return capping;
+  };
+
   while (true) {
     const rows = await requestConfirmed(count, cursor);
-    if (rows.length === 0) break; // confirmed twice: the feed has run out
+
+    if (cutoffWasMoved(rows, cursor)) {
+      throw new PaginationError(
+        `The server answered a cutoff of ${new Date(cursor).toISOString()} with nothing newer than ` +
+        `the rows it returned, while transactions are known to lie in between. It is reading the ` +
+        `cutoff more coarsely than it was given, so paging cannot cover the range without gaps. ` +
+        `Refusing to write a partial file.`
+      );
+    }
+
+    if (rows.length === 0) break; // confirmed twice, and nothing known contradicts it
 
     collect(rows);
 
@@ -256,7 +331,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       //
       // A server caught capping has already shown it withholds rows while
       // claiming to have none left, so its silence here proves nothing either.
-      if (capping && allAtFloor) throw tooManyAtOneInstant();
+      if (allAtFloor && await cappingConfirmed()) throw tooManyAtOneInstant();
       if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
       break;
     }
@@ -279,7 +354,7 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
         // straight past a truncated batch, on a server that was not even capping:
         // 2022 rows of 2420. Removing the pre-authorisations from the same feed
         // made it refuse, which is what gave the omission away.
-        if (capping && allAtFloor) throw tooManyAtOneInstant();
+        if (allAtFloor && await cappingConfirmed()) throw tooManyAtOneInstant();
         if (allAtFloor && rows.length >= count) throw tooManyAtOneInstant();
         break;
       }

@@ -490,3 +490,121 @@ test('a small complete month is not mistaken for a capped one', async () => {
     assert.equal(out.length, size, `a complete ${size}-row month must export whole`);
   }
 });
+
+test('a cap at or above the page size is caught by asking about the whole range', async () => {
+  // A server capping BELOW the page size gives itself away during the walk: its
+  // pages come back short of what was asked. One capping at or above it never
+  // does, so it never contradicts itself, and the first-month batch it truncated
+  // came back 250 rows of 350 -- and at a cap of 899, 949 of 950. Every
+  // hypothesis agrees about the stalled instant; they differ about the range.
+  const tie = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),
+    startedDate: FROM, completedDate: FROM
+  }));
+  const above = Array.from({ length: 50 }, (_, i) => row(10 + (i % 18), `above${i}`, i));
+  const all = desc([...tie, ...above]); // a first month: nothing older anywhere
+
+  for (const CAP of [200, 250, 299]) {
+    for (const cutoff of [(r, to) => r.completedDate <= to, (r, to) => r.completedDate < to]) {
+      const get = async (_p, params) =>
+        all.filter(r => cutoff(r, params.to)).slice(0, Math.min(params.count, CAP));
+      await assertEveryRowOrRaise(get, all);
+    }
+  }
+});
+
+test('stale pre-authorisations do not waive the check against a capping server', async () => {
+  // The end-of-feed exit reached through unsettled rows has to ask the same
+  // question as the other one. Without it this returned 170 rows of 350.
+  const CAP = 200;
+  const tie = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),
+    startedDate: FROM, completedDate: FROM
+  }));
+  const above = Array.from({ length: 50 }, (_, i) => row(10 + (i % 18), `above${i}`, i));
+  const all = desc([...tie, ...above]);
+  const pending = Array.from({ length: 2 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `pend${i}`), state: 'PENDING',
+    startedDate: FROM - 36e5 * (i + 1), completedDate: null, balance: null
+  }));
+  const served = [...all, ...pending].sort((a, b) =>
+    (b.completedDate ?? b.startedDate) - (a.completedDate ?? a.startedDate));
+  const get = async (_p, params) => served
+    .filter(r => (r.completedDate ?? r.startedDate) <= params.to)
+    .slice(0, Math.min(params.count, CAP));
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a cutoff rounded DOWN does not cost the newest day of the range', async () => {
+  // Rounding a timestamp down is as plausible as rounding up, and month
+  // boundaries are local rather than UTC, so the range end is rarely midnight
+  // anywhere. Starting the walk exactly at `to` then hid the last day: 6 rows of
+  // 200, at the newest end, where the balance chain is as blind as at the oldest.
+  const startOfDay = (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
+  const body = Array.from({ length: 180 }, (_, i) => row(1 + (i % 28), `r${i}`, i));
+  // On the last day of the range, above the rounded-down cutoff: exactly what
+  // gets hidden. `TO` is noon on the 31st, so these sit between midnight and it.
+  const lastDay = Array.from({ length: 8 }, (_, i) => {
+    const t = Date.UTC(2026, 7, 31, 1 + i);
+    return { ...txnIn(JOINT_POCKET, 31, `last${i}`), amount: -17, startedDate: t, completedDate: t };
+  });
+  const all = desc([...body, ...lastDay]);
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= startOfDay(params.to)).slice(0, params.count);
+
+  // The walk may well refuse this server once it catches the cutoff moving mid
+  // walk; what it must never do is hand back the month without the last day. The
+  // margin is what covers the range END, where nothing has been read yet and so
+  // nothing can contradict the answer.
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a cutoff rounded DOWN does not cost the newest day of a quiet month', async () => {
+  // The detector that catches a moved cutoff needs something already read to
+  // contradict. At the very first request there is nothing, and a quiet month
+  // over deep history finishes on that request -- so the rows above the rounded
+  // cutoff are never asked for again and never missed: 38 of 40. Reading a
+  // margin ABOVE the range is what covers that, and only that.
+  const startOfDay = (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
+  const body = Array.from({ length: 30 }, (_, i) => row(2 + (i % 27), `r${i}`, i));
+  const lastDay = Array.from({ length: 3 }, (_, i) => {
+    const t = Date.UTC(2026, 7, 31, 2 + i);   // after midnight, before noon: the hidden window
+    return { ...txnIn(JOINT_POCKET, 31, `last${i}`), amount: -17, startedDate: t, completedDate: t };
+  });
+  const all = desc([...body, ...lastDay]);
+  // Deep history, so the walk reaches past the start of the range on page one.
+  const older = Array.from({ length: 300 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `old${i}`), amount: -5,
+    startedDate: FROM - (i + 1) * 36e5, completedDate: FROM - (i + 1) * 36e5
+  }));
+  const served = desc([...all, ...older]);
+  const get = async (_p, params) =>
+    served.filter(r => r.completedDate <= startOfDay(params.to)).slice(0, params.count);
+
+  await assertEveryRowOrRaise(get, all);
+});
+
+test('a server that answers a coarser cutoff than it was given is refused', async () => {
+  // Reading a margin above the range covers a cutoff rounded down at the range
+  // END. It cannot help in the middle of the walk, where every cursor step is
+  // rounded down too and skips whatever lies between where the cutoff was asked
+  // and where it landed: 200 rows of 212, with no cap involved at all.
+  //
+  // A page is newest-first and truncated at `count`, so it can only leave out
+  // rows OLDER than the ones it carries. A row already seen that is newer than
+  // everything on the page, and still below the cutoff asked for, cannot have
+  // been dropped that way -- the server moved the cutoff, and the walk says so
+  // rather than paging into gaps.
+  const startOfDay = (t) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
+  const tieAt = FROM + 36e5;
+  const tie = Array.from({ length: 60 }, (_, i) => ({
+    ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -7, startedDate: tieAt, completedDate: tieAt
+  }));
+  const body = Array.from({ length: 150 }, (_, i) => row(2 + (i % 27), `r${i}`, i));
+  const all = desc([...tie, ...body]);
+  const get = async (_p, params) =>
+    all.filter(r => r.completedDate <= startOfDay(params.to)).slice(0, params.count);
+
+  await assertEveryRowOrRaise(get, all);
+});

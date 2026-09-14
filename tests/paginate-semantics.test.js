@@ -162,7 +162,7 @@ test('rows with no completion date ride along: no false failure', async () => {
 
 test('a small account settles in a handful of requests', async () => {
   // An account whose history runs out above `from` ends on the stall path, which
-  // costs one extra request: the walk asks whether anything older exists rather
+  // costs several extra requests: the walk asks whether anything older exists rather
   // than inferring it from page length. That inference was wrong three separate
   // ways, so the request is the cheaper mistake.
   const rows = ledger([row(20, 'a'), row(19, 'b')]);
@@ -171,4 +171,28 @@ test('a small account settles in a handful of requests', async () => {
   const out = await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 200 });
   assert.deepEqual(ids(out), ['a', 'b']);
   assert.ok(calls <= 6, `expected to settle quickly, took ${calls} calls`);
+});
+
+test('a payment that started before the range and cleared inside it survives', async () => {
+  // Month membership is the COMPLETION date, so this row belongs here. On a
+  // server ordered and filtered by START date it sits below one that started
+  // later and cleared at once, and stopping at the first completion below `from`
+  // leaves it unread. The walk reads a settlement margin past the start of the
+  // range for exactly this; with that margin at zero the row disappears.
+  const mk = (id, started, completed) => ({
+    ...txnIn(JOINT_POCKET, 2, id), startedDate: started, completedDate: completed
+  });
+  const rows = ledger([
+    ...Array.from({ length: 6 }, (_, i) => mk(`aug${i}`, at(5 + i), at(5 + i))),
+    mk('cleared-on-the-2nd', Date.UTC(2026, 6, 31, 10), at(2)),
+    mk('same-day-31st', Date.UTC(2026, 6, 31, 17), Date.UTC(2026, 6, 31, 17))
+  ]);
+  const get = async (_path, params) => [...rows]
+    .filter(r => r.startedDate <= params.to)
+    .sort((a, b) => b.startedDate - a.startedDate)
+    .slice(0, params.count ?? rows.length);
+
+  const out = await fetchRange({ get, handle, from: FROM, to: TO, pageSize: 2 });
+  assert.ok(out.some(r => r.id === 'cleared-on-the-2nd'),
+    `the row that cleared inside the range is missing: ${out.map(r => r.id).join(', ')}`);
 });

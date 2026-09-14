@@ -4,6 +4,9 @@ Issues and pull requests are welcome. The full guidance lives in the README's
 [Contributing section](README.md#contributing); the short version:
 
 - **`npm test` must pass.** It needs no install step, so there is no excuse.
+- **`node scripts/sweep.mjs` must pass too** if you touch the paging walk. The tests pin
+  failures that were found and fixed; the sweep asks whether any *new* server behaviour makes
+  the walk return a short file without saying so. It exits non-zero if one does.
 - **No dependencies, ever** — not runtime, not development, not a linter or a test
   framework. This reads a bank account, and every dependency is code a user would have to
   trust without reading. That constraint is why the project can ask people to read it
