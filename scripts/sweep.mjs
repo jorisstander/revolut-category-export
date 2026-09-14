@@ -312,9 +312,10 @@ for (const line of wrongRefusals) console.log(`  *** refused an exact-cutoff ser
 
 // A third question the two sections above cannot ask: what if the server is not
 // merely SHAPED oddly, but UNRELIABLE mid-walk? Every model above is a filter
-// and a slice, so each empty page it returns is a genuine end of feed -- 616 of
-// the 68,734 those two sections serve, measured, and not one spurious -- and no
-// row it has once shown ever stops being shown. Both of those gaps turned out to be hiding
+// and a slice, so each empty page it returns is a genuine end of feed -- 3020 of
+// the 75,422 those two sections serve, measured, most of them the ordering
+// probe's own answers, and not one spurious -- and no row it has once shown
+// ever stops being shown. Both of those gaps turned out to be hiding
 // a real defect this sweep was reporting as clean.
 // Every shape, not a chosen handful. The first version of this section ran four
 // of them and missed the very defect it was written for: the shapes that catch a

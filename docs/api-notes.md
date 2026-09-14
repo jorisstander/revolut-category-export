@@ -176,50 +176,43 @@ past the margin proves this account holds authorisations at least that long, and
 stopped at exactly that depth — so a longer one below is possible and cannot be ruled out
 from where it is standing. On a **completion-ordered** feed that costs nothing and the walk
 carries on, because such a row arrives on its completion date however long it was held. On a
-**start-ordered** one it refuses. Measured: with the check disabled the sweep returns 417 short
-files — 255 in the server-model section, 102 among the honest feeds and 60 among the unreliable
-ones — every one start-ordered, each losing rows at the oldest end of the month where the
-balance chain has nothing beneath it to break against. Turning it on converts all of those into
-refusals and costs a further 1587 configurations that used to export whole; the completion-keyed
-half is **identical either way** at 3750 complete and 2550 refused, and that is the half the
-observed API belongs to.
+**start-ordered** one it refuses. Each such row sits at the oldest end of the month, where the
+balance chain has nothing beneath it to break against, so losing one is silent.
 
-Deciding a feed is start-ordered takes two readings, and they are **not equals**.
+How it tells those two apart is the part worth reading, because it does **not** read the
+ordering off the pages. Four versions of this tried to: the size of a
+completion inversion, whether the page was still ordered by start, how far the settlement lags
+on it spread, and conjunctions of those. Every one was wrong in one direction or the other —
+twice refusing complete months from an honest server, once losing a row in silence — for a
+reason no amount of tuning reaches. **An honest completion-ordered page whose sort key is
+bucketed, and a start-ordered capture-run page, are the same local evidence.** Nothing in the
+shape of the response separates them.
 
-The first is an inversion in the delivered completions wider than two days. Any inversion at
-all was too sensitive to ship: delivery order is not ledger order, and a completion-keyed
-server that merely sorted on a timestamp truncated to the second refused a complete 340-row
-month. Measured on one feed, a genuinely start-ordered server inverts adjacent completions by
-31.5 days while a completion-ordered one truncating its sort key to the day inverts by 0.10.
-Its status here should be stated plainly: **nothing in the sweep exercises it.** Disabling it
-leaves every count identical, because the refusal it feeds also demands a row held past the
-margin, and such a row already puts that page's lag spread over the second reading's threshold.
-It is kept as a backstop for a start-ordered page that arrives out of start order, where the
-second reading cannot fire — not because anything measured here shows it earning its place.
+So it asks, in one request, on the only path where the answer changes anything. Take the
+deepest hold already in hand and put the cutoff just above its *start* date. A start-keyed
+server compares that field and hands the row straight back; a completion-keyed one cannot
+return it at all, because its completion lies a whole margin above the cutoff. The answer is
+the ordering, measured rather than guessed — the same move `cutoffWasMoved` makes, for the same
+reason.
 
-The second is the one that saves rows, and it exists because the first cannot see a **capture
-run** — authorisations started across the weeks before a month and settled together just inside
-it. They arrive as one contiguous block of near-identical completions, so the widest inversion
-seen anywhere on such a walk was a single millisecond, while the oldest row of the month went
-missing in silence. It asks for three things at once: the page still perfectly ordered by
-*start*, the page **not** ordered by completion, and the settlement lags on it spread wider than
-the margin. Measured, it removes 126 silent short files and costs 150 configurations that would
-otherwise export whole.
+Two details are load-bearing, and the sweep catches both. The question goes through the
+double-ask, because a spurious empty answer here reads as "completion-keyed" and loses the row:
+asked once, 10 short files. And the cutoff clears the rounding window instead of sitting one
+millisecond above the start, because a server rounding cutoffs down to the day rounds a
+one-millisecond probe back below the row and hides it again: 72 short files.
 
-The middle condition is not decoration, and leaving it out shipped a bug. A completion-ordered
-page stays start-descending whenever each row's lag exceeds its predecessor's by less than the
-gap between their completions — ordinary on a sparse month, or one whose rows settle instantly,
-as transfers and top-ups do. Add a single hold past the margin and the lags on that page span
-more than a month. Measured before the condition existed: 40 complete months of 88 refused on a
-feed carrying no completion inversion at all, among them a dormant holiday pocket with one
-hotel authorisation on it, which could then not be exported at all. A server ordering by
-completion delivers completion-descending pages by definition, so requiring the page to break
-completion order costs nothing real — though it is a weaker claim than a proof, and
-`src/core/paginate.js` records which assumption is left standing.
+Measured. With the probe disabled the sweep returns 417 short files — 255 in the server-model
+section, 102 among the honest feeds, 60 among the unreliable ones. Turning it on converts every
+one of them into a refusal and costs 2625 configurations that used to export whole, all of them
+start-keyed. The completion-keyed half is **identical either way**, 5938 complete and 3722
+refused sweep-wide — which is what a question a completion-keyed server always answers the same
+way should cost — and that is the half the observed API belongs to. The request itself is spent only on an
+account that really does hold an authorisation past the margin; the worst request count on a
+completed export is unchanged at 20.
 
-One arrangement defeats both, and is written down here rather than left implied: a capture run
-lying *entirely* below the margin, with the account's older history interleaved above it. The
-walk stops on that history before it has read a single held row, so it ends holding no evidence
+One arrangement defeats even that, and is written down here rather than left implied: a
+capture run lying *entirely* below the margin, with the account's older history interleaved
+above it. The walk stops on that history before it has read a single held row, so it ends holding no evidence
 that any hold exists — nothing in the responses distinguishes it from an ordinary account. No
 fixed margin makes that visible; a larger one only moves the boundary.
 
@@ -423,15 +416,16 @@ first version sampled four of them and missed the defect it was written for, bec
 that catch a believed empty page are the ones carrying `PENDING` rows and those were the two
 left out. Both were added after the fact,
 because both were hiding a real defect the sweep was reporting as clean. Every server model
-in the first two sections is a filter and a slice: measured, 616 of the 68,734 pages those
-two serve come back empty and not one of those is spurious, and no row they have once shown
-ever stops being shown. A harness that only ever meets well-behaved servers proves less than its
-configuration count suggests.
+in the first two sections is a filter and a slice: measured, 3020 of the 75,422 pages those
+two serve come back empty — most of them the ordering probe's own answers, which a
+completion-keyed server cannot fill — and not one of them is spurious, and no row they have
+once shown ever stops being shown. A harness that only ever meets well-behaved servers proves
+less than its configuration count suggests.
 
 One combination is deliberately not built: a server that filters on one field and sorts by
 another. Nobody builds that, and catching it would mean firing on evidence that accuses an
-ordinary server — the two pull in opposite directions. Excluding it hides 276 short files in
-the server-model matrix, 114 among the honest feeds and 23 among the unreliable ones, so it is
+ordinary server — the two pull in opposite directions. Excluding it hides 312 short files in
+the server-model matrix, 129 among the honest feeds and 23 among the unreliable ones, so it is
 a limit rather than a clean bill: on such a server the export would be short rather than refused. It is left out
 because it cannot be built, not because it is safe.
 

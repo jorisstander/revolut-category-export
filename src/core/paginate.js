@@ -62,18 +62,6 @@ const SETTLEMENT_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 // and put the export budget out of reach at 5600.
 const CUTOFF_ROUNDING_MS = 2 * 24 * 60 * 60 * 1000;
 
-// How wide a completion inversion has to be before it is read as evidence that
-// the server sorts by start date. Below this it is ordinary tie-breaking:
-// measured, a completion-ordered server bucketing its sort key to the day
-// inverts adjacent completions by 0.10 days on a busy month and 0.78 on a sparse
-// one, timezone-shifted buckets included. Above it, a genuinely start-ordered
-// feed inverts by tens of days.
-//
-// The same number as CUTOFF_ROUNDING_MS today, deliberately not the same
-// constant: that one trades request cost against a coarsely-read cutoff, and
-// tuning it for that reason must not quietly retune this.
-const ORDERING_NOISE_MS = 2 * 24 * 60 * 60 * 1000;
-
 export class PaginationError extends Error {
   constructor(message) {
     super(message);
@@ -127,8 +115,9 @@ const keyOf = (row) => {
  * them must not be able to refuse somebody's month.
  *
  * A collision here makes the bookkeeping below WEAKER, not safer: two rows
- * collapse into one entry, so `shown` under-counts and both the capping check
- * and the coarse-cutoff detector have less to contradict the server with. It
+ * collapse into one entry, so `shown` under-counts and the three things that
+ * read it -- the capping check, the coarse-cutoff detector and the ordering
+ * probe -- have less to contradict the server with. It
  * costs sensitivity, never correctness — which is the right way round, but not
  * the "more conservative" this comment claimed for several revisions.
  */
@@ -160,21 +149,6 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
   const mine = new Map();
   let gaveUpOnTopMargin = false;
-  // Whether any page has shown the feed to be ordered by START date rather than
-  // completion. It matters because the walk stops on a page's oldest completion,
-  // which on such a feed is not where the server's own cursor has reached.
-  //
-  // Two readings set it, and they are not equals. A wide completion inversion is
-  // enough on its own. The second, below, exists because the shape that costs
-  // the most rows -- a capture run -- inverts by a single millisecond, far under
-  // any threshold worth setting, so it has to be recognised by corroboration
-  // instead.
-  //
-  // Set from the main loop's pages only, not from the probe pages read by
-  // `cutoffWasMoved`, `cappingConfirmed` or the stall path. That asymmetry costs
-  // sensitivity and nothing else -- a feed whose ordering only ever shows on a
-  // probe page goes unnoticed and the walk behaves as it did before this existed.
-  let notCompletionOrdered = false;
   // The walk starts a margin ABOVE the range, for the same reason it reads a
   // margin below it. A server rounding its cutoff to whole days is as plausible
   // as one rounding up, and month boundaries are local rather than UTC, so the
@@ -419,81 +393,6 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
 
     collect(rows);
 
-    for (let i = 1; i < rows.length; i++) {
-      const newer = rows[i - 1].completedDate;
-      const older = rows[i].completedDate;
-      // Only an inversion big enough to HIDE A HOLD counts. Treating any
-      // inversion at all as evidence was far too sensitive: a completion-keyed
-      // server reading the cutoff exactly and capping nothing, which merely
-      // sorted on a timestamp truncated to the second and returned rows within
-      // that second oldest-first, refused a complete 340-row month. Delivery
-      // order is not ledger order -- `continuity.js` had to learn the same thing
-      // about batch settlements -- so it cannot carry a refusal on its own.
-      //
-      // Measured on one feed: genuinely start-ordered inverts by 31.5 days; a
-      // completion-ordered server truncating its sort key to the DAY inverts by
-      // 0.10 days; to the second or hour, not at all.
-      if (typeof newer === 'number' && typeof older === 'number' &&
-          older - newer > ORDERING_NOISE_MS) {
-        notCompletionOrdered = true;
-        break;
-      }
-    }
-
-    // The other way round, because inversion size alone misses the shape that
-    // matters most. A CAPTURE RUN -- authorisations started across the weeks
-    // before the month and settled together just inside it -- arrives on a
-    // start-ordered feed as one contiguous block of near-identical completions.
-    // There is no inversion to measure: the widest the walk saw on such a feed
-    // was ONE MILLISECOND, while it lost the oldest row of the month in silence.
-    //
-    // So read the evidence the other way. A completion-ordered server shuffles
-    // the start dates as soon as settlement lags differ, so a page that is still
-    // perfectly ordered by START while the lags on it spread wider than the
-    // margin is a start-ordered feed. The lag-spread condition is what keeps an
-    // ordinary page out of it: where every row settled in about the same time,
-    // the two orderings agree and neither can hide anything from the other.
-    let startsDescending = true;
-    let completionsDescending = true;
-    let minLag = Infinity;
-    let maxLag = -Infinity;
-    for (let i = 0; i < rows.length; i++) {
-      const started = rows[i].startedDate;
-      const completed = rows[i].completedDate;
-      if (typeof started === 'number' && typeof completed === 'number') {
-        minLag = Math.min(minLag, completed - started);
-        maxLag = Math.max(maxLag, completed - started);
-      }
-      const previousStart = i > 0 ? rows[i - 1].startedDate : null;
-      if (typeof started === 'number' && typeof previousStart === 'number' && started > previousStart) {
-        startsDescending = false;
-      }
-      const previousCompleted = i > 0 ? rows[i - 1].completedDate : null;
-      if (typeof completed === 'number' && typeof previousCompleted === 'number' && completed > previousCompleted) {
-        completionsDescending = false;
-      }
-    }
-    // All three, and the middle one is the load-bearing correction. An earlier
-    // version asked only "start-descending, with lags spread past the margin",
-    // on the premise that a completion-ordered server shuffles start dates as
-    // soon as lags differ. That premise is false. A completion-ordered page
-    // stays start-descending whenever each row's lag exceeds its predecessor's
-    // by less than the gap between their completions -- the ordinary case on a
-    // sparse month, or one whose rows settle instantly. Add a single hold past
-    // the margin and it refused: measured, 40 complete months of 88 on a feed
-    // with no completion inversion anywhere, including a dormant holiday pocket
-    // with one hotel authorisation, which could then not be exported at all.
-    //
-    // A server that orders by completion delivers completion-descending pages,
-    // by definition. So requiring the page to break completion order costs
-    // nothing real and removes every one of those false alarms. It is a weaker
-    // claim than the one it replaces, not a proof: it still assumes no
-    // completion-ordered server delivers a page that breaks completion order
-    // while staying perfectly start-ordered with a month of lag spread on it.
-    if (startsDescending && !completionsDescending && maxLag - minLag > SETTLEMENT_GRACE_MS) {
-      notCompletionOrdered = true;
-    }
-
     const completions = completionsOf(rows);
     if (completions.length === 0) {
       // Nothing settled on this page, so there is no sound way to step the
@@ -522,13 +421,43 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
       // The account says whether that is a live risk. A row already in hand
       // whose hold reaches past the margin proves this account holds
       // authorisations at least that long, and the walk has stopped at exactly
-      // that depth, so a longer one below is possible and cannot be ruled out
-      // from here. Refuse instead of guessing. Where no such row exists the
-      // margin has not been tested and the walk stops as before.
-      const heldPastTheMargin = [...mine.values()].some(row =>
+      // that depth, so a longer one below is possible. Where no such row exists
+      // the margin has not been tested and the walk stops as before.
+      const heldPastTheMargin = [...mine.values()].filter(row =>
         typeof row.completedDate === 'number' && row.completedDate >= from && row.completedDate < to &&
         typeof row.startedDate === 'number' && row.startedDate < from - SETTLEMENT_GRACE_MS);
-      if (notCompletionOrdered && heldPastTheMargin) {
+
+      // Then ASK, rather than read the ordering off the pages.
+      //
+      // Four attempts were made to infer it from what the pages looked like --
+      // the size of a completion inversion, whether the page stayed ordered by
+      // start, how far the settlement lags spread. Every one of them was wrong
+      // in one direction or the other, twice refusing complete months from an
+      // honest server and once losing a row in silence, because an honest
+      // completion-ordered page with a bucketed sort key and a start-ordered
+      // capture run are THE SAME LOCAL EVIDENCE. No combination of those signals
+      // separates them, so none of them belongs here.
+      //
+      // The server can be asked instead, and answers in one request. Put the
+      // cutoff just above the deepest hold's START date. A start-keyed server
+      // compares that field and hands the row straight back; a completion-keyed
+      // one cannot return it at all, because its completion lies a whole margin
+      // above the cutoff. That is a measurement, and it is the same move
+      // `cutoffWasMoved` makes for the same reason.
+      //
+      // Through `requestConfirmed`, because a spurious empty answer here reads
+      // as "completion-keyed" and loses the row. A margin above the start rather
+      // than one millisecond, because a server rounding cutoffs down to the day
+      // rounds a one-millisecond probe back below the row and hides it again --
+      // both learnt the hard way, both on this file's other probes.
+      let startKeyed = false;
+      if (heldPastTheMargin.length > 0) {
+        const deepest = Math.min(...heldPastTheMargin.map(row => row.startedDate));
+        const answer = await requestConfirmed(MAX_PAGE_SIZE, deepest + CUTOFF_ROUNDING_MS);
+        const back = new Set(answer.map(labelOf));
+        startKeyed = heldPastTheMargin.some(row => back.has(labelOf(row)));
+      }
+      if (startKeyed) {
         throw new PaginationError(
           `This account holds transactions for longer than the ${SETTLEMENT_GRACE_MS / 86400000} days ` +
           `of history read below the range, and the server is ordering by start date rather than ` +

@@ -933,8 +933,10 @@ test('a hold reaching past the settlement margin refuses on a start-ordered feed
 });
 
 test('a completion-ordered server that sorts to the second is not accused of start-ordering', async () => {
-  // The check above reads a page arriving out of completion order as evidence
-  // the server sorts by start date. Delivery order is not ledger order, though
+  // A version of this walk read a page arriving out of completion order as
+  // evidence the server sorts by start date. Delivery order is not ledger order,
+  // though -- the ordering is asked of the server now, not read off the pages,
+  // and this case is kept because that reading cost a complete month
   // -- `continuity.js` had to learn that about batch settlements -- so on its
   // own it cannot carry a refusal. Armed on ANY inversion, this server refused a
   // complete 340-row month: completion-keyed, cutoff read exactly, capping
@@ -978,9 +980,11 @@ test('a capture run reaching past the margin refuses rather than dropping its ol
   // paging reaches, where the balance chain has nothing beneath it to break
   // against. It went missing in silence: 360 of 361 rows, well formed.
   //
-  // What makes it catchable is the run above it: those rows are still perfectly
-  // ordered by START while their settlement lags spread wider than the margin,
-  // and a completion-ordered server shuffles start dates as soon as lags differ.
+  // What makes it catchable is the run above it: those held rows are in hand, so
+  // the walk can ask the server about the deepest of them by start date. Reading
+  // the ordering off the page instead -- perfectly start-ordered, lags spread
+  // past the margin -- was tried and is false: see the dormant-pocket case
+  // below, which an honest server serves and that reading refused.
   const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
   const MONTH_TO = Date.UTC(2026, 7, 31, 22);
   const DAY = 864e5;
@@ -1022,7 +1026,7 @@ test('a capture run reaching past the margin refuses rather than dropping its ol
 });
 
 test('a dormant pocket with one long-held authorisation is not accused of start-ordering', async () => {
-  // The check that catches a capture run asks whether a page is still perfectly
+  // A version of the capture-run check asked whether a page was still perfectly
   // ordered by START while its settlement lags spread past the margin. On its
   // own that accuses an honest server. A completion-ordered page stays
   // start-descending whenever each row's lag exceeds its predecessor's by less
@@ -1061,4 +1065,56 @@ test('a dormant pocket with one long-held authorisation is not accused of start-
   const out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
   assert.equal(out.length, expected.length,
     `a complete month was refused or shortened: got ${out.length} of ${expected.length}`);
+});
+
+test('a capture run settling on one instant still refuses rather than dropping its oldest row', async () => {
+  // Same shape as the capture run above, with one thing changed: the batch
+  // settles on a SINGLE timestamp rather than numbering its milliseconds
+  // upward. That is the ordinary case everywhere else in this project -- every
+  // tie group in this file, and `smear: 1` throughout the sweep -- and the
+  // direction a real batch happens to stamp them in is arbitrary.
+  //
+  // It matters because a version of this check asked whether the delivered page
+  // broke completion order. A batch on one instant breaks nothing, so the check
+  // fell silent and the deep hold was lost: 360 of 361 rows, no error. The
+  // ordering is not read off the pages any more; the server is asked.
+  const MONTH_FROM = Date.UTC(2026, 6, 31, 22);
+  const MONTH_TO = Date.UTC(2026, 7, 31, 22);
+  const DAY = 864e5;
+  const mk = (id, started, completed, amount) => ({
+    ...txnIn(JOINT_POCKET, 15, id), amount, fee: 0, startedDate: started, completedDate: completed
+  });
+
+  const ordinary = Array.from({ length: 300 }, (_, i) => {
+    const t = MONTH_TO - 1 - Math.floor(i * (MONTH_TO - MONTH_FROM) / 300);
+    return mk(`in${i}`, t, t, -(10 + (i % 40)));
+  });
+  // Every capture on the same instant.
+  const captures = Array.from({ length: 60 }, (_, i) =>
+    mk(`cap${i}`, MONTH_FROM - Math.floor((i + 1) * 40 * DAY / 60), MONTH_FROM + 36e5, -20));
+  const deepHold = mk('deep-hold', MONTH_FROM - 70 * DAY, MONTH_FROM + 1, -33);
+  const history = Array.from({ length: 500 }, (_, i) => {
+    const t = MONTH_FROM - 41 * DAY - i * 36e5;
+    return mk(`old${i}`, t, t, -5);
+  });
+  const all = desc([...ordinary, ...captures, deepHold, ...history]);
+  const expected = all.filter(r => r.completedDate >= MONTH_FROM && r.completedDate < MONTH_TO);
+
+  const get = async (_p, params) => [...all]
+    .filter(r => r.startedDate < params.to)
+    .sort((a, b) => b.startedDate - a.startedDate)
+    .slice(0, params.count);
+
+  let out;
+  try {
+    out = await fetchRange({ get, handle, from: MONTH_FROM, to: MONTH_TO });
+  } catch (error) {
+    assert.match(error.message, /Refusing to write|missing between|Exceeded/,
+      `raised, but not for a reason that tells the user to distrust the export: ${error.message}`);
+    return;
+  }
+  const returned = new Set(out.map(r => r.id));
+  const lost = expected.filter(r => !returned.has(r.id));
+  assert.equal(lost.length, 0,
+    `lost ${lost.length} of ${expected.length} rows without raising (${lost.map(r => r.id).join(', ')})`);
 });
