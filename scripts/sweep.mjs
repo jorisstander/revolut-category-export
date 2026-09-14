@@ -107,7 +107,13 @@ const SHAPES = [
   { name: 'batch-small', rows: 200, tie: 40, tieAt: 'oldest' },
   { name: 'first-month', rows: 300, tie: 250, tieAt: 'oldest', history: 0 },
   { name: 'with-pending', rows: 200, pending: 3 },
-  { name: 'batch-and-pending', rows: 150, tie: 60, pending: 2, tieAt: 'oldest' }
+  { name: 'batch-and-pending', rows: 150, tie: 60, pending: 2, tieAt: 'oldest' },
+  // Authorisations held for weeks and captured inside the month. They start well
+  // before it and settle inside it, so on a start-ordered feed they sit below
+  // everything else -- a minority of rows that are outliers in lag, which a
+  // single lag rule applied to every row can never produce.
+  { name: 'held-auths', rows: 300, holds: 120, holdLagDays: 21 },
+  { name: 'few-held-auths', rows: 300, holds: 5, holdLagDays: 21 }
 ];
 
 const CAPS = [0, 120, 200, 500, 2000];
@@ -115,7 +121,8 @@ const LAGS = [0, 2, 21];
 /** A batch landing on one instant, and the same batch spread over a few. */
 const SMEARS = [1, 2, 5];
 
-function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0, smear = 1 }) {
+function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDays = 0, smear = 1,
+                holds = 0, holdLagDays = 0 }) {
   const all = [];
   const gap = MONTH / Math.max(n, 1);
   // A lag that VARIES per row. A uniform one keeps start order and completion
@@ -140,6 +147,13 @@ function feed({ rows: n, tie = 0, tieAt = 'oldest', pending = 0, history, lagDay
     all.push({
       id: `pend${i}`, amount: -3, fee: 0, startedDate: FROM + 36e5 * i,
       completedDate: null, balance: null, account: { id: POCKET }
+    });
+  }
+  for (let i = 0; i < holds; i++) {
+    all.push({
+      id: `hold${i}`, amount: -(20 + (i % 15)), fee: 0,
+      startedDate: FROM - holdLagDays * 864e5 - i * 1000,
+      completedDate: FROM + 3e5 + i, account: { id: POCKET }
     });
   }
   const behind = history === undefined ? Math.max(n, 100) : history;

@@ -152,14 +152,25 @@ Two further rules follow from the same principle, that page shape is not evidenc
   Page length is not evidence anywhere else in the walk, so it cannot be the one exception
   here: a spurious empty page mid-walk would drop everything older than it.
 
-The walk also reads a week below the start of the range before calling it covered. A
+The walk also reads a month below the start of the range before calling it covered. A
 transaction belongs to a month by when it *completed*, but the server may order the feed by
 when each one *started*; under that ordering a payment started on the 31st and cleared on
-the 2nd sits below one that started later and cleared at once. The margin is free for an
-ordinary month — those rows sit inside a page that would have been read anyway — and costs
-about a week's transactions divided by the page size for a busy one: measured, nothing up
-to 400 rows a month, one request at 1000, three at 3000. Rows outside the range are
-discarded either way. A stall *inside* that margin ends the walk rather than raising: it is
+the 2nd sits below one that started later and cleared at once.
+
+A week of margin was not enough, and the case that broke it is ordinary: an authorisation
+held by a hotel or a car-hire desk for several weeks and captured later starts well before
+the month it settles in. On a start-ordered feed it sits below everything the walk reads and
+is never fetched, and because the loss is a contiguous run at the oldest end, the balance
+chain cannot see it. Measured on such a server, 120 rows of 420 went missing without a word,
+and five held authorisations were enough to lose five rows. Thirty days covers the holds that
+occur in practice; it cannot cover an unbounded one, and no fixed margin can.
+
+It is not free. For an account whose history runs at about the rate of the month being
+exported, a quiet month still costs one request and an ordinary one two to four, because
+those rows sit inside a page that would have been read anyway — but a busy month pays for the
+margin at its own density: measured, ten requests at 1000 rows a month and twenty at 2000.
+Rows outside the range are discarded either way, so the margin buys nothing but the right to
+stop. A stall *inside* that margin ends the walk rather than raising: it is
 activity outside the month being exported, and it should not be able to abort it.
 
 When the walk stalls, each question it asks the server is shaped by the answer to the last
@@ -230,19 +241,17 @@ coarse-cutoff reason.
 
 Cost scales with the size of the range, because one request carries at most one page.
 Measured against the module at the default page size, for a month of the stated size against
-an account carrying ordinary history behind it: 20 rows is one request, 200 is two, 400 is
-three, 1000 is six, 2000 is eleven, 5000 is twenty-six. A stall can add a probe that asks for
+an account whose history runs at about the same rate as the month: 20 rows is one request,
+200 is two, 400 is four, 1000 is ten, 2000 is twenty. A stall can add a probe that asks for
 a full page, so a feed that keeps stalling costs roughly double; the sweep's worst completed
-export is thirteen requests. An account running at that volume
-*continuously* costs somewhat more, because the margin below the range is then as dense as
-the range itself. An account whose
+export is twenty requests. An account whose
 history runs out inside the range costs two to four more, because that is the path that asks
 the extra question rather than assuming the answer. The 40-page budget is therefore also a
 ceiling on how large a range one export can cover, and a range holding more than that refuses
 rather than paging on. Where the ceiling falls depends on what surrounds the range, because
-the margins either side are read at whatever density they hold: measured, a little under 8000 rows for
-the current month over sparse history, and a little over 6000 for a past month on an account
-running at the same rate throughout, where the margin above the range is populated too.
+the margins either side are read at whatever density they hold: measured, a little under 8000 rows
+where the history behind the range is sparse, and about 4000 where it runs at the same rate
+as the range itself — the month-deep margin is read at whatever density it holds.
 
 ### Completeness is verified, not assumed
 
@@ -328,7 +337,7 @@ page caps, account shapes and settlement lags nobody has established for this AP
 walk ever return a short file without saying so? It builds each server from four independent choices — the field it compares, the field it
 orders by, whether the comparison is inclusive, and how coarsely it reads the cutoff — because
 a real one is built that way too, and the shapes that hurt come from the combinations. It runs
-8100 of them plus 1080 feeds an honest server would hand over whole, and exits non-zero if any
+9900 of them plus 1320 feeds an honest server would hand over whole, and exits non-zero if any
 comes back short in silence, or if a server reading the cutoff exactly is refused. It is where
 the round-down cases above were found, where a batch spread over two milliseconds was found to
 walk straight through the guard meant to stop it, and where treating each behaviour as its own
@@ -336,7 +345,10 @@ self-contained model was found to be the reason none of that had shown up sooner
 
 One combination is deliberately not built: a server that filters on one field and sorts by
 another. Nobody builds that, and catching it would mean firing on evidence that accuses an
-ordinary server — the two pull in opposite directions.
+ordinary server — the two pull in opposite directions. Excluding it removed 96 short files the
+walk does not catch, so it is a limit rather than a clean bill: on such a server the export
+would be short rather than refused. It is left out because it cannot be built, not because it
+is safe.
 
 `tests/paginate-semantics.test.js` holds the walk to "every row, or raise" under inclusive,
 exclusive, started-date-keyed, day-granular, ignored, and null-completion-date servers —

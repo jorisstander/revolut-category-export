@@ -495,7 +495,8 @@ test('a cap at or above the page size is caught by asking about the whole range'
   // A server capping BELOW the page size gives itself away during the walk: its
   // pages come back short of what was asked. One capping at or above it never
   // does, so it never contradicts itself, and the first-month batch it truncated
-  // came back 250 rows of 350 -- and at a cap of 899, 949 of 950. Every
+  // came back 250 rows of 350, and on a larger feed than this one, 949 of 950,
+  // one row short. Every
   // hypothesis agrees about the stalled instant; they differ about the range.
   const tie = Array.from({ length: 300 }, (_, i) => ({
     ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),
@@ -515,7 +516,10 @@ test('a cap at or above the page size is caught by asking about the whole range'
 
 test('stale pre-authorisations do not waive the check against a capping server', async () => {
   // The end-of-feed exit reached through unsettled rows has to ask the same
-  // question as the other one. Without it this returned 170 rows of 350.
+  // question as the other one. Without it this fixture returns 250 of its 350
+  // rows: its cap of 200 plus the 50 above the batch. The 170 written here
+  // before belongs to the CAP = 120 fixture above -- the denominators match,
+  // which is exactly what hid it.
   const CAP = 200;
   const tie = Array.from({ length: 300 }, (_, i) => ({
     ...txnIn(JOINT_POCKET, 1, `tie${i}`), amount: -(10 + i % 30),

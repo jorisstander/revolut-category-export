@@ -8,17 +8,14 @@ const DEFAULT_PAGE_SIZE = 200;
 // is its own harm regardless of what comes back.
 //
 // Cost scales with the size of the range, because one request carries at most
-// one page. Measured against this module at the default page size, for a month
-// of the stated size against an account carrying ordinary history behind it: 20
-// rows costs one request, 200 two, 400 three, 1000 six, 2000 eleven, 5000
-// twenty-six. An account running at that volume continuously costs more, the
-// margin below the range being as dense as the range itself. So this ceiling is
+// one page. Measured against this module at the default page size, for an
+// account whose history runs at about the rate of the month being exported: 20
+// rows costs one request, 200 two, 400 four, 1000 ten, 2000 twenty. So this ceiling is
 // also a limit on how large a range one export can cover -- roughly this many
 // pages times the page size. Where it falls depends on what surrounds the
 // range, because the margins either side are read at whatever density they
-// hold: measured, a little under 8000 rows for the current month over sparse
-// history, and a little over 6000 for a past month on an account running at the
-// same rate throughout, where the margin above the range is populated too.
+// hold: measured, a little under 8000 rows where the history behind the range is
+// sparse, and about 4000 where it runs at the same rate as the range itself.
 // A range holding more than that refuses rather than paging on. That is the
 // intended trade: a personal account does not see 8000 transactions in a month,
 // and a visible refusal beats an unbounded run of requests against a bank.
@@ -34,12 +31,21 @@ const MAX_PAGE_SIZE = 2000;
 // behaviours this module refuses to guess about. Under that ordering a payment
 // started on the 31st and cleared on the 2nd sits below a same-day payment that
 // started later and cleared immediately, so stopping the moment a completion
-// falls below `from` can leave it unread. The margin is free for an ordinary
-// month -- those rows sit inside a page that would have been read anyway -- and
-// costs about a week's transactions divided by the page size for a busy one:
-// measured, nothing up to 400 rows a month, one request at 1000, three at 3000.
-// Rows outside the range are discarded at the end either way.
-const SETTLEMENT_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+// falls below `from` can leave it unread.
+//
+// A week of margin was not enough. A hotel or car-hire authorisation is held for
+// weeks and captured later, so it starts well before the month it settles in --
+// and on a start-ordered feed it sits below everything the walk reads, never
+// fetched, its loss a contiguous run at the oldest end where the balance chain
+// is blind. Measured on such a server: 120 rows of 420 gone without a word, and
+// five held authorisations were enough to lose five rows. Thirty days covers the
+// holds that actually occur.
+//
+// It is not free. Measured, a small month costs about three requests more and a
+// busy one about four, because the margin is read at whatever density it holds.
+// Rows outside the range are discarded at the end either way, so the margin buys
+// nothing except the right to stop.
+const SETTLEMENT_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // How far ABOVE the range the walk starts, which is a different question with a
 // different answer. Below the range it is chasing settlement lag, which runs to
@@ -247,11 +253,13 @@ export async function fetchRange({ get, handle, from, to, pageSize = DEFAULT_PAG
     // server sorted by, and that is not established either. A row above both
     // minima is inside the covered window whichever it was.
     //
-    // Measuring the window from the page's newest COMPLETION instead was wrong
-    // in a way that took a while to see: on a server ordering by start date, one
-    // row with ordinary settlement lag sits low by start and high by completion,
-    // lifting that mark above everything a rounded cutoff had hidden. The check
-    // then found nothing to report and 203 rows of 300 went quietly missing.
+    // Measuring the window from the page's newest COMPLETION instead was wrong:
+    // on a server ordering by start date, one row with ordinary settlement lag
+    // sits low by start and high by completion, lifting that mark above anything
+    // a rounded cutoff had hidden. The loss it permits is small -- three rows in
+    // seven hundred and fifty-six, across twenty-five thousand randomised
+    // servers -- and the premise was wrong either way, which is the reason for
+    // the change rather than the size of what it caught.
     const starts = page.map(row => row.startedDate).filter(value => typeof value === 'number');
     const floorCompleted = settled.length > 0 ? Math.min(...settled) : -Infinity;
     const floorStarted = starts.length > 0 ? Math.min(...starts) : -Infinity;

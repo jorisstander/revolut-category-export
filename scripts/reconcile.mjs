@@ -46,8 +46,20 @@ const amountOf = (row) => {
 // locale of the account, so the same transaction can read -1234.56 on one side
 // and "-1.234,56" on the other; keying on the raw text reported every row as
 // one-sided while the totals agreed to the penny.
+// Our own CSV puts an apostrophe in front of a description beginning = + - @, so
+// a spreadsheet treats it as text rather than a formula. Revolut's export does
+// not. Keying on the raw cell therefore puts the same transaction in two
+// different key spaces and reports it as missing from both sides -- which is the
+// third time this key has been wrong in the same way, and `@revtag` transfer
+// descriptions make it an everyday one.
+const FORMULA_LEAD = new Set(['=', '+', '-', '@']);
+const descriptionOf = (row) => {
+  const text = pick(row, ['Description']);
+  return text.startsWith("'") && FORMULA_LEAD.has(text[1]) ? text.slice(1) : text;
+};
+
 const composite = (row) =>
-  `${pick(row, ['Started Date', 'Completed Date'])}|${amountOf(row).toFixed(2)}|${pick(row, ['Description'])}`;
+  `${pick(row, ['Started Date', 'Completed Date'])}|${amountOf(row).toFixed(2)}|${descriptionOf(row)}`;
 
 const keyFactory = (a, b) => {
   const bothHaveIds = [a, b].every(rows => rows.length > 0 && rows.every(row => pick(row, ['Transaction ID'])));
