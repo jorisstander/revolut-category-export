@@ -1,9 +1,12 @@
-# Revolut Category Export
+# Category Export for Revolut
 
 ![Tests](../../actions/workflows/test.yml/badge.svg)
 
 **Revolut's own CSV and PDF exports drop the category you assigned to every transaction.
 This extension puts it back.**
+
+Not affiliated with or endorsed by Revolut. Revolut is a trademark of Revolut Ltd; it is
+used here only to say which service this extension works with.
 
 <p align="center">
   <img src="docs/screenshot.png" alt="The extension popup: an account row, a month stepper, the filename the export will save as, an Export CSV button, and a confirmation reading Exported 38 transactions with the saved filename beneath it" width="320">

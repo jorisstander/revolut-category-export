@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Revolut Category Export",
+  "name": "Category Export for Revolut",
   "version": "0.1.0",
-  "description": "Export Revolut transactions to CSV, including the category that the official export leaves out.",
+  "description": "Export your Revolut transactions to CSV with the category the official export omits. Not affiliated with or endorsed by Revolut.",
   "permissions": ["cookies", "downloads"],
   "host_permissions": ["https://app.revolut.com/*"],
   "icons": {
@@ -12,7 +12,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "Revolut Category Export",
+    "default_title": "Category Export for Revolut",
     "default_popup": "extension/popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
