@@ -85,9 +85,14 @@ A tool that reads a bank is worth impersonating. Anyone can fork this, add a few
 lines that send your transactions somewhere, and publish it under a name a
 letter or two different.
 
-The official extension ID is published in the README. Check it on
-`chrome://extensions` against that, not against the name — the name is the part
-an impostor copies.
+**The extension is not on the Chrome Web Store yet** — a listing is in review at
+the time of writing. Until it is published there is no official ID, and the only
+supported way to install is unpacked from this repository, which is also the way
+you can read every line first.
+
+Once it is listed, the official ID will be published in the README and checkable
+on `chrome://extensions`. Check the ID rather than the name: the name is the
+part an impostor copies.
 
 ## If something does not match
 
