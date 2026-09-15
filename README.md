@@ -94,6 +94,20 @@ than take on trust.
   not something the browser enforces for you — so read it.
 - Everything runs locally. Your transactions are never sent anywhere.
 
+### Verifying a release
+
+Loading the extension unpacked, you are reading the code that runs. Installing
+from a store means trusting a package you cannot see, so releases are built to
+be checkable instead: the package is assembled deterministically from tracked
+files, and every release publishes its SHA-256. The same commit produces the
+same bytes on any machine, and the release workflow proves it by building twice
+before it publishes.
+
+[docs/verifying-a-release.md](docs/verifying-a-release.md) has the commands —
+including how to check the copy Chrome actually installed, which is *not*
+byte-identical to the published zip because the store re-signs what it
+distributes.
+
 ## How it works
 
 `GET /api/retail/wallets` lists your accounts. `GET /api/retail/user/current/transactions/last`

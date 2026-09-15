@@ -154,22 +154,26 @@ checkable:
 
 There is no server, so there is nothing to disclose about retention or transfer.
 
-## Screenshots — still outstanding
+## Screenshots — blocked on a re-capture
 
-The Store wants at least one screenshot at **1280×800** or **640×400**.
-`docs/screenshot.png` is 640×940, which is neither: it is the popup at its own
-portrait aspect, right for the README and wrong for the listing.
+The Store wants at least one at **1280×800** or **640×400**.
+`node scripts/store-screenshot.mjs` produces one, centring `docs/screenshot.png`
+on a canvas of the right size. That part is done and works.
 
-`docs/store-assets/screenshot-frame.html` is a plain 1280×800 frame that centres
-that image on a neutral background; open it, capture the page at exactly
-1280×800, and save the result as `docs/store-assets/store-1280x800.png`. It is
-deliberately unstyled — whoever owns the popup's design should feel free to
-replace it with something better, and the listing is the one place where the
-presentation is the product.
+**What is missing is a current `docs/screenshot.png`.** The one in the repository
+was taken before the rename: it shows a popup headed *"Revolut Category Export"*
+and a footer with no disclaimer. Putting that on the listing would display, in
+the largest type on the page, the exact name the rename exists to avoid — and it
+would be the first thing a reviewer looking at the trademark question sees.
 
-Worth adding a second and third shot eventually: the account picker showing
-several accounts, and the refusal message, since "it stops rather than writing a
-wrong file" is the strongest thing about the tool and no screenshot shows it.
+Re-taking it needs a logged-in session and real transactions, so it cannot be
+generated. Capture the popup as it is now, replace `docs/screenshot.png`, and
+run the script. That fixes the README's screenshot too, which is stale for the
+same reason.
+
+Worth adding a second and third shot eventually: the account picker with several
+accounts, and a refusal message — "it stops rather than writing a wrong file" is
+the strongest thing about the tool and no screenshot shows it.
 
 ## Trademark
 
