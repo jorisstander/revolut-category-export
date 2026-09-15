@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Build the Chrome Web Store listing image from the README screenshot.
 //
-// The Store takes 1280×800 or 640×400. `docs/screenshot.png` is 640×940 — the
-// popup at its own portrait aspect, right above a README and wrong for a
-// listing. This centres it on a canvas of the accepted size.
+// The Store takes 1280×800 or 640×400. `docs/screenshot.png` is the popup at
+// its own portrait aspect, right above a README and wrong for a listing. This
+// centres it on a canvas of the accepted size.
 //
 // It does the compositing here rather than through a browser because a capture
 // step is a step somebody has to remember, get the zoom right for, and redo
@@ -11,10 +11,11 @@
 // image every time from the same input.
 //
 // There is a PNG codec below, in the sense that a bicycle contains an engine:
-// it reads 8-bit truecolour non-interlaced images and writes them back, which
-// is what `docs/screenshot.png` is and all this needs. Anything else is
-// refused rather than guessed at. `node:zlib` does the actual compression, so
-// this stays dependency-free like everything else here.
+// it reads 8-bit non-interlaced images, with or without an alpha channel, and
+// writes them back without one. Both turn up in practice -- a screenshot saved
+// from a viewer tends to be truecolour, and one produced by a canvas is always
+// RGBA. Anything else is refused rather than guessed at. `node:zlib` does the
+// actual compression, so this stays dependency-free like everything else here.
 //
 // Usage: node scripts/store-screenshot.mjs
 import { deflateSync, inflateSync } from 'node:zlib';
@@ -45,19 +46,26 @@ function crc32(buffer) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-/** An 8-bit truecolour PNG as {width, height, rgb} with three bytes per pixel. */
+/** An 8-bit PNG as {width, height, rgb} with three bytes per pixel.
+ *
+ *  Colour type 6 (RGBA) is accepted and flattened onto `BACKGROUND`, which is
+ *  the colour it is about to be placed on anyway. Where the image is fully
+ *  opaque, as a popup screenshot is, that is a no-op that just drops the
+ *  channel.
+ */
 function decodePng(file) {
   if (file.readUInt32BE(0) !== 0x89504e47) throw new Error(`${SOURCE} is not a PNG`);
 
   const width = file.readUInt32BE(16);
   const height = file.readUInt32BE(20);
   const [depth, colour, , , interlace] = [file[24], file[25], file[26], file[27], file[28]];
-  if (depth !== 8 || colour !== 2 || interlace !== 0) {
+  if (depth !== 8 || (colour !== 2 && colour !== 6) || interlace !== 0) {
     throw new Error(
       `${SOURCE} is bit depth ${depth}, colour type ${colour}, interlace ${interlace}; ` +
-      `this reads 8-bit truecolour non-interlaced only. Re-save it as one, or widen this.`
+      `this reads 8-bit truecolour or RGBA, non-interlaced. Re-save it as one, or widen this.`
     );
   }
+  const channels = colour === 6 ? 4 : 3;
 
   const parts = [];
   for (let offset = 8; offset < file.length;) {
@@ -69,8 +77,8 @@ function decodePng(file) {
   }
 
   const raw = inflateSync(Buffer.concat(parts));
-  const stride = width * 3;
-  const rgb = Buffer.alloc(height * stride);
+  const stride = width * channels;
+  const flat = Buffer.alloc(height * stride);
 
   // Undo the per-scanline filters. Each row is prefixed with the filter it used,
   // and every filter but None refers to the row above, so this cannot be done
@@ -79,9 +87,11 @@ function decodePng(file) {
     const filter = raw[y * (stride + 1)];
     const line = raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
     for (let x = 0; x < stride; x++) {
-      const left = x >= 3 ? rgb[y * stride + x - 3] : 0;
-      const up = y > 0 ? rgb[(y - 1) * stride + x] : 0;
-      const upLeft = (x >= 3 && y > 0) ? rgb[(y - 1) * stride + x - 3] : 0;
+      // Filters refer to the pixel to the left, which is `channels` bytes back,
+      // not three -- getting that wrong on an RGBA image shears the colours.
+      const left = x >= channels ? flat[y * stride + x - channels] : 0;
+      const up = y > 0 ? flat[(y - 1) * stride + x] : 0;
+      const upLeft = (x >= channels && y > 0) ? flat[(y - 1) * stride + x - channels] : 0;
       let value = line[x];
       if (filter === 1) value += left;
       else if (filter === 2) value += up;
@@ -94,7 +104,18 @@ function decodePng(file) {
       } else if (filter !== 0) {
         throw new Error(`unknown PNG row filter ${filter} on line ${y}`);
       }
-      rgb[y * stride + x] = value & 0xff;
+      flat[y * stride + x] = value & 0xff;
+    }
+  }
+
+  if (channels === 3) return { width, height, rgb: flat };
+
+  // Flatten onto the background it is about to sit on.
+  const rgb = Buffer.alloc(width * height * 3);
+  for (let i = 0; i < width * height; i++) {
+    const a = flat[i * 4 + 3] / 255;
+    for (let c = 0; c < 3; c++) {
+      rgb[i * 3 + c] = Math.round(flat[i * 4 + c] * a + BACKGROUND[c] * (1 - a));
     }
   }
   return { width, height, rgb };

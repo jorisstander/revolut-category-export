@@ -154,22 +154,27 @@ checkable:
 
 There is no server, so there is nothing to disclose about retention or transfer.
 
-## Screenshots — blocked on a re-capture
+## Screenshots
 
-The Store wants at least one at **1280×800** or **640×400**.
-`node scripts/store-screenshot.mjs` produces one, centring `docs/screenshot.png`
-on a canvas of the right size. That part is done and works.
+`docs/store-assets/store-1280x800.png` is ready to upload. Rebuild it after any
+change to the popup with:
 
-**What is missing is a current `docs/screenshot.png`.** The one in the repository
-was taken before the rename: it shows a popup headed *"Revolut Category Export"*
-and a footer with no disclaimer. Putting that on the listing would display, in
-the largest type on the page, the exact name the rename exists to avoid — and it
-would be the first thing a reviewer looking at the trademark question sees.
+```bash
+node scripts/store-screenshot.mjs
+```
 
-Re-taking it needs a logged-in session and real transactions, so it cannot be
-generated. Capture the popup as it is now, replace `docs/screenshot.png`, and
-run the script. That fixes the README's screenshot too, which is stale for the
-same reason.
+It centres `docs/screenshot.png` on a canvas of the size the Store accepts.
+
+**Both images are renders of the real popup, not captures of a real account.**
+`extension/popup.html` is loaded, its fields are filled with representative
+values — a joint EUR account, August 2026, thirty-eight transactions — and the
+result is rasterised. That is deliberate twice over. It keeps the promise made
+everywhere else here that no real account data appears in this repository, and
+it means the screenshot can be regenerated when the popup changes instead of
+depending on somebody having the right month of real transactions to hand.
+
+The figures shown are invented. They illustrate the interface; they are not a
+claim about anyone's account.
 
 Worth adding a second and third shot eventually: the account picker with several
 accounts, and a refusal message — "it stops rather than writing a wrong file" is
