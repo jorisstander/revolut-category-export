@@ -8,7 +8,7 @@ tag that disagrees with it.
 
 Nothing yet.
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-09-15
 
 First release. Exports a month of Revolut transactions to CSV with the
 `Category`, `Comment` and `Transaction ID` columns the official export omits.
