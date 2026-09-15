@@ -32,15 +32,26 @@ jobs:
 
       # The tag is what people cite; the manifest is what Chrome enforces. If
       # they disagree, the release is named after a version nobody installed.
+      #
+      # Only the part before any `-` is compared. A Chrome manifest version is
+      # one to four dot-separated integers and nothing else, so a tag like
+      # `v0.1.0-rc1` can never equal it -- comparing the whole tag would make
+      # every pre-release impossible to cut.
       - name: the tag must match the manifest version
         run: |
           tag="${GITHUB_REF_NAME#v}"
+          core="${tag%%-*}"
           manifest=$(node -p "require('./manifest.json').version")
-          if [ "$tag" != "$manifest" ]; then
-            echo "::error::tag $GITHUB_REF_NAME says $tag, manifest.json says $manifest"
+          if [ "$core" != "$manifest" ]; then
+            echo "::error::tag $GITHUB_REF_NAME carries version $core, manifest.json says $manifest"
             exit 1
           fi
-          echo "version $manifest"
+          if [ "$tag" != "$core" ]; then
+            echo "PRERELEASE=--prerelease" >> "$GITHUB_ENV"
+            echo "version $manifest, published as a pre-release ($tag)"
+          else
+            echo "version $manifest"
+          fi
 
       # Twice, into different directories, compared. The published hash is only
       # worth something if the build that produced it can be reproduced, and the
@@ -92,6 +103,10 @@ jobs:
           sha256  $SHA256
           \`\`\`
 
+          The attached zip is named for the version inside the manifest, which is
+          what Chrome enforces and installs; on a pre-release that is deliberately
+          not the same string as the tag.
+
           The zip is built deterministically from this tag: the same commit
           produces the same bytes on any machine, and this workflow checks that
           by building twice and comparing before publishing. Every file in it is
@@ -105,4 +120,4 @@ jobs:
           EOF
           gh release create "$GITHUB_REF_NAME" "$ZIP" \
             --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md
+            --notes-file notes.md $PRERELEASE
