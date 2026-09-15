@@ -142,43 +142,27 @@ includes the transaction category, which Revolut's own export omits.
 
 ## Test instructions
 
-The dashboard asks how a reviewer should test the item, and this is the section
-most likely to get a bank-adjacent extension bounced: a reviewer cannot exercise
-it at all without a Revolut account, and there is no acceptable way to give them
-one.
-
-**Do not send credentials.** Not yours, not a throwaway's. Sharing bank login
-details is a breach of the account terms in its own right, and an extension that
-arrives with bank credentials attached invites exactly the scrutiny this listing
-is trying to avoid. Say plainly why they are not provided and describe what the
-reviewer can verify without them.
+**The field takes 500 characters.** The long version below the box is what a
+reviewer would want; what fits is this (477 characters):
 
 ```
-This extension reads the signed-in user's own Revolut account, so exercising the
-export requires a Revolut login. I cannot supply credentials for a bank account,
-and I would not ask a reviewer to use someone else's banking session, so none are
-attached.
+Exporting requires a Revolut login, as the extension reads the signed-in user's own account. I cannot supply bank credentials for review.
 
-What you can verify without an account:
+Without an account: install, open the popup. It shows "No Revolut session found" plus a login link. That is the whole of its behaviour with nothing to read.
 
-1. Install and open the popup. With no Revolut session in the profile it shows
-   "No Revolut session found" and a link to app.revolut.com. This is the whole
-   behaviour of the extension when it has nothing to read.
-2. The extension makes no request anywhere until the user clicks Export CSV, and
-   then only to app.revolut.com. There is one network call site in the source,
-   src/core/http.js, with a hard-coded origin and the literal method 'GET'.
-3. Nothing is stored. There is no use of chrome.storage, localStorage,
-   sessionStorage or IndexedDB anywhere in the package.
-4. The single cookie read is revo_device_id, requested by name at
-   extension/popup.js, whose value Revolut's API requires as a request header.
-
-The complete source is public and the uploaded package is built reproducibly
-from it, so the two can be compared directly:
-https://github.com/jorisstander/revolut-category-export
-
-With a Revolut account, testing is: log in at app.revolut.com, open the popup,
-pick an account and a month, click Export CSV, and a CSV downloads.
+One network call site (src/core/http.js), one origin, GET only, no storage APIs. Full source and a reproducible build of this package:
+github.com/jorisstander/revolut-category-export
 ```
+
+The compression drops the enumerated verification list and keeps the three
+things that actually matter: why there are no credentials, what the reviewer
+sees without an account so a blank-looking popup is not read as a broken
+extension, and where to look instead.
+
+**Do not send credentials** to make the field easier to write. Not yours, not a
+throwaway's. Sharing bank login details breaches the account terms on its own,
+and an extension arriving with them attached invites exactly the scrutiny the
+rest of this listing is written to avoid.
 
 ## Distribution
 
