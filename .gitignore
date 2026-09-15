@@ -16,3 +16,10 @@ dist/
 # become so by an absent-minded `git add`. Committing one deliberately still
 # works with `git add -f`.
 docs/legal/
+
+# Chrome Web Store scaffolding. The submission copy and the listing image are
+# operational, not part of the extension, and restating the permission
+# justifications next to PRIVACY.md only gives them somewhere to drift. Kept on
+# disk as the record of what was submitted.
+docs/store-listing.md
+docs/store-assets/

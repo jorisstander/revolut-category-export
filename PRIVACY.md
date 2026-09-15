@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Revolut Category Export** — last updated 14 September 2026.
+**Category Export for Revolut** — last updated 15 September 2026.
 
 ## The short version
 
@@ -87,6 +87,18 @@ Being straight about the limit of that: the `cookies` permission Chrome grants
 that page JavaScript cannot reach. The extension does not. That is a property of
 the code you can read, not something the browser enforces on your behalf — which
 is why the code is kept small enough to read.
+
+## The screenshots
+
+No real account data appears anywhere in this repository, and that includes the
+pictures. The screenshot in the README and the one on the store listing are
+renders of the actual popup — its real markup and stylesheet — with the fields
+filled in by hand: a joint EUR account, August 2026, thirty-eight transactions.
+Those figures are invented. They illustrate the interface and describe nobody's
+money.
+
+An earlier screenshot was a photograph of a real account's real month. It was
+replaced for this reason.
 
 ## Third parties
 

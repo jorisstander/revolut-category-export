@@ -17,6 +17,10 @@
 // RGBA. Anything else is refused rather than guessed at. `node:zlib` does the
 // actual compression, so this stays dependency-free like everything else here.
 //
+// The output lands in `docs/store-assets/`, which is not tracked: it is a listing
+// asset rather than part of the extension, and it is fully derived from this
+// script and `docs/screenshot.png`, both of which are. Run this to rebuild it.
+//
 // Usage: node scripts/store-screenshot.mjs
 import { deflateSync, inflateSync } from 'node:zlib';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
