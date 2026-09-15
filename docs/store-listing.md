@@ -205,8 +205,18 @@ checkable:
   the user's transactions inside their own browser and writes them to a file on
   their own disk. Nothing is transmitted to the developer or to any third party.
 - Every other category — **No**.
-- **Not sold to third parties**, **not used for anything other than the single
-  purpose**, **not used for creditworthiness or lending** — certify all three.
+Then certify all three statements on the Privacy practices tab. Publishing is
+blocked until they are ticked, and each is true outright rather than on a
+technicality, because nothing is transferred off the device at all:
+
+- *Transferring or selling user data to third parties* — there is no server, no
+  analytics and no telemetry; one origin, GET only.
+- *Using data beyond the single purpose* — the only use of the data is the
+  single purpose, which is writing the user's CSV.
+- *Using data to determine credit-worthiness or for lending* — nothing is
+  transferred or retained, so there is nothing to assess anyone with. This one
+  exists because of extensions that touch financial data, so expect a reviewer
+  to weigh it for this listing in particular.
 
 There is no server, so there is nothing to disclose about retention or transfer.
 
