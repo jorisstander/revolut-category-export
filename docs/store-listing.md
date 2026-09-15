@@ -187,6 +187,31 @@ pick an account and a month, click Export CSV, and a CSV downloads.
   is no reason to keep the tool from someone whose account it can read.
 - **Pricing:** Free. No in-app purchases, no payments, nothing to declare.
 
+## Remote code
+
+**No.** All executable code is in the uploaded package.
+
+Verified rather than assumed — every module specifier in `extension/` and `src/`
+is relative, the only `<script>` is `src="popup.js"`, and there is no `eval`, no
+`Function` constructor, no dynamic `import()`, no `importScripts` and no
+WebAssembly anywhere in the shipped files.
+
+The distinction that matters, since it is where the answer gets second-guessed:
+fetching JSON from `app.revolut.com` is **data**, not remote code. Remote code
+means script that is executed and did not arrive in the package. Nothing this
+extension downloads is ever executed, and `URL.createObjectURL` appears once, on
+the CSV handed to the user.
+
+If the form asks for elaboration:
+
+```
+All executable code is contained in the uploaded package. Every module is
+imported by relative path; there are no external scripts, no eval or Function
+constructors, no dynamic imports, no importScripts and no WebAssembly. The
+extension makes GET requests to app.revolut.com to read the user's own
+transaction data as JSON; that data is never executed.
+```
+
 ## Data use disclosures
 
 Answer the dashboard's data questionnaire as follows, all of which is true and
